@@ -18,23 +18,26 @@ grep -q 'target_cpu = "arm64"' "$REPO_ROOT/args.gn"
 grep -q 'is_debug = false' "$REPO_ROOT/args.gn"
 grep -q 'symbol_level = 0' "$REPO_ROOT/args.gn"
 grep -q 'use_official_google_api_keys = false' "$REPO_ROOT/args.gn"
-grep -q 'is_desktop_android = false' "$REPO_ROOT/args.gn"
+grep -q 'is_desktop_android = true' "$REPO_ROOT/args.gn"
+grep -q 'enable_desktop_android_extensions = true' "$REPO_ROOT/args.gn"
+grep -q 'chrome_public_manifest_package = "io.github.hooiv.pomelo"' "$REPO_ROOT/args.gn"
 grep -q 'google_api_key = ""' "$REPO_ROOT/args.gn"
 
-# The series placeholder has no patch paths.
-while IFS= read -r line || [[ -n $line ]]; do
-  line=${line#"${line%%[![:space:]]*}"}
-  [[ -z $line || $line == \#* ]] && continue
-  die "patches/series is not empty: $line"
-done <"$REPO_ROOT/patches/series"
+series_body=$(grep -vE '^[[:space:]]*(#|$)' "$REPO_ROOT/patches/series")
+expected=$'patches/0001-rebrand-pomelo.patch\npatches/0002-desktop-android-extensions.patch\npatches/0003-on-device-devtools.patch\npatches/0004-bottom-address-bar.patch\npatches/0005-night-mode.patch'
+[[ $series_body == "$expected" ]]
+for patch in $series_body; do
+  [[ -f $REPO_ROOT/$patch ]] || die "missing $patch"
+done
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-# Empty series against a throwaway checkout.
+# A comment-only series applies nothing.
 mkdir -p "$tmp/empty/chromium/src"
 git -C "$tmp/empty/chromium/src" init -q
-CHROMIUM_ROOT=$tmp/empty/chromium POMELO_SERIES=$REPO_ROOT/patches/series \
+printf '# none\n\n' >"$tmp/empty-series"
+CHROMIUM_ROOT=$tmp/empty/chromium POMELO_SERIES=$tmp/empty-series \
   "$script_dir/apply-patches.sh" | grep -q 'applied 0 patch'
 
 # A real patch applies, and a broken one does not.

@@ -1,0 +1,185 @@
+Pomelo: on-device DevTools on phones.
+
+Enables features::kAndroidDevToolsFrontend and drops the tablet form-factor
+gate in DevToolsWindowAndroid (isNonMultiDisplayContextOnTablet). More tools
+shows Developer tools and Inspect. The bundled frontend gets a phone viewport
+meta after it opens. Written against the M158 sources; not derived from GPL
+browser patches.
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java b/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java
+index 91b71ae..ca10f97 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java
+@@ -273,4 +273,17 @@ public class MoreToolsItemBuilder {
+                         mIsMenuIconAtStart),
+                 /* showIcon= */ false);
+     }
++
++    /** Pomelo: "Inspect" opens element-inspection mode on the current page. */
++    public ListItem buildDevToolsInspectItem() {
++        return AppMenuItemUtils.createStandardListItem(
++                AppMenuItemUtils.buildModelForStandardMenuItem(
++                        mContext,
++                        mAppMenuItemTheme,
++                        R.id.dev_tools_inspect,
++                        R.string.menu_dev_tools_inspect,
++                        Resources.ID_NULL,
++                        mIsMenuIconAtStart),
++                /* showIcon= */ false);
++    }
+ }
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java b/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java
+index 2b49c0e..0b78516 100644
+--- a/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java
+@@ -1241,6 +1241,7 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
+ 
+                     if (mMoreToolsItemBuilder.shouldShowDevToolsItem(currentTab)) {
+                         submenuItems.add(mMoreToolsItemBuilder.buildDevToolsItem());
++                        submenuItems.add(mMoreToolsItemBuilder.buildDevToolsInspectItem());
+                     }
+ 
+                     if (!submenuItems.isEmpty()
+diff --git a/chrome/browser/devtools/android/devtools_window_android.cc b/chrome/browser/devtools/android/devtools_window_android.cc
+index 5676256..2a92761 100644
+--- a/chrome/browser/devtools/android/devtools_window_android.cc
++++ b/chrome/browser/devtools/android/devtools_window_android.cc
+@@ -7,12 +7,61 @@
+ #include "chrome/browser/devtools/android/jni/DevToolsWindowAndroid_jni.h"
+ #include "content/public/browser/web_contents.h"
+ #include "content/public/common/buildflags.h"
++#include "base/functional/bind.h"
++#include "base/memory/weak_ptr.h"
++#include "base/task/single_thread_task_runner.h"
++#include "base/time/time.h"
++#include "content/public/browser/devtools_agent_host.h"
++#include "content/public/browser/render_frame_host.h"
+ #include "third_party/jni_zero/jni_zero.h"
+ 
+ #if BUILDFLAG(ENABLE_DEVTOOLS_FRONTEND)
+ #include "chrome/browser/devtools/devtools_window.h"
+ #endif  // BUILDFLAG(ENABLE_DEVTOOLS_FRONTEND)
+ 
++#if BUILDFLAG(ENABLE_DEVTOOLS_FRONTEND)
++void ApplyPomeloPhoneViewport(base::WeakPtr<content::WebContents> inspected) {
++  if (!inspected) {
++    return;
++  }
++  scoped_refptr<content::DevToolsAgentHost> host =
++      content::DevToolsAgentHost::GetOrCreateForTab(inspected.get());
++  if (!host) {
++    return;
++  }
++  DevToolsWindow* window = DevToolsWindow::FindDevToolsWindow(host.get());
++  if (!window) {
++    return;
++  }
++  content::WebContents* frontend = window->GetDevToolsWebContents();
++  if (!frontend) {
++    return;
++  }
++  content::RenderFrameHost* frame = frontend->GetPrimaryMainFrame();
++  if (!frame || !frame->IsRenderFrameLive()) {
++    return;
++  }
++  // The bundled frontend is a desktop layout. A viewport meta lets a phone
++  // scale it instead of laying it out at a desktop width.
++  frame->ExecuteJavaScript(
++      uR"JS((()=>{const d=document;if(!d||!d.head)return;if(d.querySelector('meta[name="viewport"][data-pomelo]'))return;const m=d.createElement('meta');m.name='viewport';m.setAttribute('data-pomelo','1');m.content='width=device-width,initial-scale=1,minimum-scale=0.25';d.head.appendChild(m);})())JS",
++      base::NullCallback());
++}
++
++void SchedulePomeloPhoneViewport(content::WebContents* inspected) {
++  if (!inspected) {
++    return;
++  }
++  base::WeakPtr<content::WebContents> weak = inspected->GetWeakPtr();
++  for (int delay_ms : {0, 300, 1200}) {
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
++        FROM_HERE, base::BindOnce(&ApplyPomeloPhoneViewport, weak),
++        base::Milliseconds(delay_ms));
++  }
++}
++#endif  // BUILDFLAG(ENABLE_DEVTOOLS_FRONTEND)
++
++
+ class BrowserWindowInterface;
+ 
+ static void JNI_DevToolsWindowAndroid_OpenDevTools(
+@@ -24,6 +73,7 @@ static void JNI_DevToolsWindowAndroid_OpenDevTools(
+   DevToolsWindow::OpenDevToolsWindow(
+       web_contents, DevToolsToggleAction::Show(),
+       DevToolsOpenedByAction::kMainMenuOrMainShortcut);
++  SchedulePomeloPhoneViewport(web_contents);
+ #else
+   NOTREACHED();
+ #endif
+@@ -38,6 +88,7 @@ static void JNI_DevToolsWindowAndroid_OpenDevToolsConsole(
+   DevToolsWindow::OpenDevToolsWindow(web_contents,
+                                      DevToolsToggleAction::ShowConsolePanel(),
+                                      DevToolsOpenedByAction::kConsoleShortcut);
++  SchedulePomeloPhoneViewport(web_contents);
+ #else
+   NOTREACHED();
+ #endif
+@@ -52,6 +103,7 @@ static void JNI_DevToolsWindowAndroid_OpenDevToolsInspect(
+   DevToolsWindow::OpenDevToolsWindow(
+       web_contents, DevToolsToggleAction::Inspect(),
+       DevToolsOpenedByAction::kInspectorModeShortcut);
++  SchedulePomeloPhoneViewport(web_contents);
+ #else
+   NOTREACHED();
+ #endif
+diff --git a/chrome/browser/devtools/android/java/src/org/chromium/chrome/browser/devtools/DevToolsWindowAndroid.java b/chrome/browser/devtools/android/java/src/org/chromium/chrome/browser/devtools/DevToolsWindowAndroid.java
+index e1c0cda..c6ff13e 100644
+--- a/chrome/browser/devtools/android/java/src/org/chromium/chrome/browser/devtools/DevToolsWindowAndroid.java
++++ b/chrome/browser/devtools/android/java/src/org/chromium/chrome/browser/devtools/DevToolsWindowAndroid.java
+@@ -16,7 +16,6 @@ import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask.NativeBro
+ import org.chromium.content_public.browser.ContentFeatureList;
+ import org.chromium.content_public.browser.ContentFeatureMap;
+ import org.chromium.content_public.browser.WebContents;
+-import org.chromium.ui.base.DeviceFormFactor;
+ 
+ /** DevToolsWindowAndroid provides an interface to control DevTools windows. */
+ @NullMarked
+@@ -26,8 +25,10 @@ public class DevToolsWindowAndroid {
+     private DevToolsWindowAndroid() {}
+ 
+     public static boolean isDevToolsAvailable(Context context) {
+-        return ContentFeatureMap.isEnabled(ContentFeatureList.ANDROID_DEV_TOOLS_FRONTEND)
+-                && DeviceFormFactor.isNonMultiDisplayContextOnTablet(context);
++        // Pomelo: developer tools are available on phones. Upstream also
++        // required DeviceFormFactor.isNonMultiDisplayContextOnTablet.
++        return context != null
++                && ContentFeatureMap.isEnabled(ContentFeatureList.ANDROID_DEV_TOOLS_FRONTEND);
+     }
+ 
+     public static boolean isDevToolsAllowedFor(
+diff --git a/chrome/browser/ui/android/strings/android_chrome_strings.grd b/chrome/browser/ui/android/strings/android_chrome_strings.grd
+index 147bfb5..0536ccc 100644
+--- a/chrome/browser/ui/android/strings/android_chrome_strings.grd
++++ b/chrome/browser/ui/android/strings/android_chrome_strings.grd
+@@ -4506,6 +4506,9 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
+       <message name="IDS_MENU_DEV_TOOLS" desc="Menu item to show developer tools. [CHAR_LIMIT=27]">
+         Developer tools
+       </message>
++      <message name="IDS_MENU_DEV_TOOLS_INSPECT" desc="Menu item to inspect the current page with developer tools. [CHAR_LIMIT=27]">
++        Inspect
++      </message>
+       <message name="IDS_MENU_SETTINGS" desc="Menu item for opening browser settings. [CHAR_LIMIT=27]">
+         Settings
+       </message>
+diff --git a/content/public/common/content_features.cc b/content/public/common/content_features.cc
+index a33f8cf..47a2a46 100644
+--- a/content/public/common/content_features.cc
++++ b/content/public/common/content_features.cc
+@@ -37,7 +37,9 @@ BASE_FEATURE(kAperitifHelpers, base::FEATURE_ENABLED_BY_DEFAULT);
+ #endif
+ 
+ // DevTools frontend for Android.
+-BASE_FEATURE(kAndroidDevToolsFrontend, base::FEATURE_DISABLED_BY_DEFAULT);
++// Pomelo enables this on phones. The tablet form-factor gate is removed in
++// DevToolsWindowAndroid.
++BASE_FEATURE(kAndroidDevToolsFrontend, base::FEATURE_ENABLED_BY_DEFAULT);
+ 
+ // Enables media to continue playing in the background.
+ BASE_FEATURE(kAndroidEnableBackgroundMediaLargeFormFactors,

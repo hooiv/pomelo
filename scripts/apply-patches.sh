@@ -23,8 +23,16 @@ while IFS= read -r line || [[ -n $line ]]; do
   [[ -f $patch ]] || die "patch listed in series does not exist: $line"
 
   log "applying $line"
-  git -C "$src" apply --check --whitespace=nowarn "$patch"
-  git -C "$src" apply --whitespace=nowarn "$patch"
+  if ! git -C "$src" apply --check --whitespace=nowarn "$patch"; then
+    die "patch did not apply cleanly (git apply --check failed): $line"
+  fi
+  if ! git -C "$src" apply --whitespace=nowarn --reject "$patch"; then
+    die "patch failed to apply: $line"
+  fi
+  if find "$src" -name '*.rej' -print -quit | grep -q .; then
+    find "$src" -name '*.rej' -print >&2
+    die "patch left reject files: $line"
+  fi
   applied=$((applied + 1))
 done <"$series"
 

@@ -1,0 +1,51 @@
+Pomelo: address bar on the bottom by default.
+
+Chromium 158 calls this AndroidBottomBar (kAndroidBottomBar), not
+kAndroidBottomToolbar. The feature is enabled, the cached flag matches, and
+the unset address-bar preference is BOTTOM_SETTINGS. Settings still offers
+top and bottom.
+
+diff --git a/chrome/browser/flags/android/chrome_feature_list.cc b/chrome/browser/flags/android/chrome_feature_list.cc
+index ed9b009..fb19408 100644
+--- a/chrome/browser/flags/android/chrome_feature_list.cc
++++ b/chrome/browser/flags/android/chrome_feature_list.cc
+@@ -683,7 +683,7 @@ BASE_FEATURE(kAndroidAutoProjected, base::FEATURE_DISABLED_BY_DEFAULT);
+ BASE_FEATURE(kAndroidAutofillPrefObserver, base::FEATURE_DISABLED_BY_DEFAULT);
+ BASE_FEATURE(kAndroidBeforeUnloadSupport, base::FEATURE_DISABLED_BY_DEFAULT);
+ BASE_FEATURE(kAndroidBookmarkBarDragDrop, base::FEATURE_DISABLED_BY_DEFAULT);
+-BASE_FEATURE(kAndroidBottomBar, base::FEATURE_DISABLED_BY_DEFAULT);
++BASE_FEATURE(kAndroidBottomBar, base::FEATURE_ENABLED_BY_DEFAULT);
+ BASE_FEATURE(kAndroidBricksNativePage, base::FEATURE_DISABLED_BY_DEFAULT);
+ // When enabled, the "Close all tabs" action in the tab switcher (GTS/Hub) leaves
+ // pinned tabs open, and the confirmation dialog offers an opt-in checkbox to close
+diff --git a/chrome/browser/flags/android/java/src/org/chromium/chrome/browser/flags/ChromeFeatureList.java b/chrome/browser/flags/android/java/src/org/chromium/chrome/browser/flags/ChromeFeatureList.java
+index 6d16dca..c3e1bca 100644
+--- a/chrome/browser/flags/android/java/src/org/chromium/chrome/browser/flags/ChromeFeatureList.java
++++ b/chrome/browser/flags/android/java/src/org/chromium/chrome/browser/flags/ChromeFeatureList.java
+@@ -964,7 +964,7 @@ public abstract class ChromeFeatureList {
+     public static final CachedFlag sAndroidAutoProjected =
+             newCachedFlag(ANDROID_AUTO_PROJECTED, false);
+     public static final CachedFlag sAndroidBottomBar =
+-            newCachedFlag(ANDROID_BOTTOM_BAR, false, /* defaultValueInTests= */ true);
++            newCachedFlag(ANDROID_BOTTOM_BAR, true, /* defaultValueInTests= */ true);
+     public static final CachedFlag sAndroidDesktopWebUiHistory =
+             newCachedFlag(
+                     ANDROID_DESKTOP_WEB_UI_HISTORY,
+diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/settings/AddressBarPreference.java b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/settings/AddressBarPreference.java
+index 1f79e58..955f8af 100644
+--- a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/settings/AddressBarPreference.java
++++ b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/settings/AddressBarPreference.java
+@@ -48,10 +48,10 @@ public class AddressBarPreference extends ContainedRadioButtonGroupPreference
+     private RadioButtonWithDescription mBottomButton;
+     private @HighlightedOption int mHighlightedOption;
+ 
+-    // We choose this as a "default return value" because top omnibox is the default today. Choose
+-    // TOP_SETTINGS because TOP_LONG_PRESS causes an animation (see ToolbarPositionController).
++    // Pomelo puts the address bar on the bottom until the user picks a side in
++    // settings. BOTTOM_SETTINGS does not play the long-press move animation.
+     private static final @ToolbarPositionAndSource int DEFAULT_POSITION_AND_SOURCE =
+-            ToolbarPositionAndSource.TOP_SETTINGS;
++            ToolbarPositionAndSource.BOTTOM_SETTINGS;
+ 
+     public AddressBarPreference(Context context, AttributeSet attrs) {
+         super(context, attrs);
