@@ -24,7 +24,7 @@ grep -q 'chrome_public_manifest_package = "io.github.hooiv.pomelo"' "$REPO_ROOT/
 grep -q 'google_api_key = ""' "$REPO_ROOT/args.gn"
 
 series_body=$(grep -vE '^[[:space:]]*(#|$)' "$REPO_ROOT/patches/series")
-expected=$'patches/0001-rebrand-pomelo.patch\npatches/0002-desktop-android-extensions.patch\npatches/0003-on-device-devtools.patch\npatches/0004-bottom-address-bar.patch\npatches/0005-night-mode.patch'
+expected=$'patches/0001-rebrand-pomelo.patch\npatches/0002-desktop-android-extensions.patch\npatches/0003-on-device-devtools.patch\npatches/0004-bottom-address-bar.patch\npatches/0005-night-mode.patch\npatches/0006-v2-phone-tools.patch'
 [[ $series_body == "$expected" ]]
 for patch in $series_body; do
   [[ -f $REPO_ROOT/$patch ]] || die "missing $patch"
