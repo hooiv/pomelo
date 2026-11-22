@@ -1,0 +1,12 @@
+Pomelo is licensed under the BSD 3-Clause License. See LICENSE.
+
+Portions of the fetch, build, source-mtime, disk-cleanup, and chained-runner
+design are adapted from holtdroid/chromium-builds, which is licensed under the
+Apache License, Version 2.0:
+
+  https://github.com/holtdroid/chromium-builds
+  https://www.apache.org/licenses/LICENSE-2.0
+
+Those portions remain available under the Apache License, Version 2.0.
+The Chromium tree this project builds is fetched at build time and is covered
+by Chromium's own licenses, not by this repository's license.

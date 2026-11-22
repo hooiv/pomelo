@@ -1,0 +1,36 @@
+# Reruns failed jobs from build.yml. A rerun resumes from the checkpoint the
+# last successful stage left behind.
+#
+# Adapted from holtdroid/chromium-builds (Apache-2.0):
+# https://github.com/holtdroid/chromium-builds
+
+name: retry
+
+on:
+  workflow_run:
+    workflows: [build]
+    types: [completed]
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: pomelo-retry
+  cancel-in-progress: false
+
+jobs:
+  retry:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      ATTEMPTS: "3"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rerun failed build jobs
+        run: scripts/retry-failed.sh

@@ -1,0 +1,36 @@
+name: build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Chromium tag. Leave empty to use CHROMIUM_VERSION.
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: pomelo-stock-android
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: resolve
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: scripts/resolve-version.sh
+
+  build:
+    needs: resolve
+    uses: ./.github/workflows/chain.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.resolve.outputs.version }}
