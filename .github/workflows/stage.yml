@@ -331,7 +331,7 @@ jobs:
         run: |
           set -euo pipefail
           scripts/checkpoint.sh release-delete
-          gh release edit "v${VERSION}" --latest
+          scripts/pin-apk-latest.sh "$VERSION"
 
       - name: Delete the checkpoint release after the last failed attempt
         if: failure() && env.CHECKPOINT_BACKEND == 'release' && github.run_attempt >= 3

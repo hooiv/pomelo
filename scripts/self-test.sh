@@ -91,6 +91,15 @@ if CHROMIUM_ROOT=$tmp/cr CHECKPOINT_DIR=$tmp/ckpt "$script_dir/checkpoint.sh" re
 fi
 
 # Version resolver.
+main_tag=$(GITHUB_REF=refs/heads/main GITHUB_SHA=abcdef1234567890 release_tag 158.0.8127.43)
+[[ $main_tag == v158.0.8127.43 ]]
+branch_tag=$(GITHUB_REF=refs/heads/cursor/v1-phone-features-beb5 GITHUB_SHA=130f13fa326cdf84 release_tag 158.0.8127.43)
+[[ $branch_tag == v158.0.8127.43-cursor-v1-phone-features-beb5-130f13f ]]
+if GITHUB_REF=refs/heads/main release_is_prerelease; then
+  die "main was treated as a prerelease"
+fi
+GITHUB_REF=refs/heads/cursor/v1-phone-features-beb5 release_is_prerelease
+
 out=$(INPUT_VERSION=158.0.8127.43 "$script_dir/resolve-version.sh")
 [[ $out == 158.0.8127.43 ]]
 if INPUT_VERSION=not-a-version "$script_dir/resolve-version.sh"; then

@@ -30,15 +30,21 @@ This is upstream Chromium, fetched at the pinned tag and built without
 modifying it. It does not include Google Play services, sign-in, or sync.
 EOF
 
+create_args=(--title "Pomelo $version for Android" --latest=false --notes-file "$notes")
+if release_is_prerelease; then
+  create_args+=(--prerelease)
+fi
+
 n=1
 while [[ $n -le 5 ]]; do
   if gh release view "$tag" >/dev/null 2>&1 \
-    || gh release create "$tag" \
-      --title "Pomelo $version for Android" \
-      --latest=false \
-      --notes-file "$notes"; then
+    || gh release create "$tag" "${create_args[@]}"; then
     if gh release upload "$tag" "$dest/$asset" "$dest/$asset.sha256" --clobber; then
-      gh release edit "$tag" --latest
+      if release_is_prerelease; then
+        gh release edit "$tag" --prerelease --latest=false
+      else
+        gh release edit "$tag" --latest
+      fi
       gh release view "$tag" --json assets --jq '.assets[].name' | grep -qx "$asset"
       log "published $asset on $tag"
       exit 0
