@@ -16,7 +16,7 @@ on:
 
 permissions:
   actions: write
-  contents: read
+  contents: write
 
 concurrency:
   group: pomelo-retry
@@ -25,7 +25,7 @@ concurrency:
 jobs:
   retry:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -34,3 +34,5 @@ jobs:
       - uses: actions/checkout@v7
       - name: Rerun failed build jobs
         run: scripts/retry-failed.sh
+      - name: Delete checkpoint releases older than two days
+        run: scripts/cleanup-checkpoint-releases.sh

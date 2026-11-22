@@ -32,9 +32,9 @@ A stock Android build does not finish inside one GitHub-hosted job. Jobs on `ubu
 4. Restore `out/arm64` from the previous stage's checkpoint, if there is one.
 5. Set every source file, except `src/out`, to `2000-01-01T00:00:00Z`, so the restored build directory is still newer than its inputs and ninja resumes.
 6. Run `autoninja` on `chrome_public_apk` until 35 minutes before a 330-minute budget measured from the start of the job. The job timeout is 358 minutes. A clean timeout exits 124 and is not a failure.
-7. If the APK linked, publish it to a GitHub Release and delete the checkpoint. Otherwise pack `out/arm64` and hand it to the next stage.
+7. If the APK linked, publish it on `v<version>` and delete the checkpoint prerelease. Otherwise pack `out/arm64` and upload it to `checkpoint-<run_id>` for the next stage.
 
-[`retry.yml`](.github/workflows/retry.yml) reruns the failed jobs of a `build` run from the last day, up to three attempts, when that run finishes and again hourly. A rerun keeps the previous stage's checkpoint. The hourly run does not start a new build.
+[`retry.yml`](.github/workflows/retry.yml) reruns the failed jobs of a `build` run from the last day, up to three attempts, when that run finishes and again hourly. A rerun keeps the checkpoint prerelease. The third failure deletes it. The same workflow deletes any `checkpoint-*` release older than two days. It does not start a new build.
 
 The chained-job shape, the disk cleanup, the fixed mtimes, and the time budget are adapted from [holtdroid/chromium-builds](https://github.com/holtdroid/chromium-builds) (Apache-2.0). See [NOTICE](NOTICE).
 
@@ -52,20 +52,27 @@ That arm64 build included WebView, which Pomelo does not build. Two stages is th
 
 ### Checkpoint storage
 
-`out/arm64` has to move from one runner to the next. In that reference run the stage-1 arm64 tree was **5.40 GiB** uncompressed and **981 MiB** after `zstd -3` (17.73%). The uploaded artifact was **1,028,616,180 bytes**.
+`out/arm64` has to move from one runner to the next. In that reference run the stage-1 arm64 tree was **5.40 GiB** uncompressed and **981 MiB** after `zstd -3` (17.73%). That is already larger than the **500 MB** of Actions artifact storage included with GitHub Free. Artifact storage is billed past that allowance, separately from the free public-runner minutes, and a budget that stops overage rejects the upload.
 
-GitHub Free includes **500 MB** of Actions artifact storage, shared with GitHub Packages, and a hard cap of **10 GB per artifact**. Public repositories do not pay for standard runner minutes. Artifact storage is not included in that exemption: past 500 MB, GitHub bills GB-hours unless the account budget is set to stop usage, in which case the upload fails. Splitting a checkpoint does not shrink the total. It only keeps each artifact under the 10 GB cap.
+The default backend is a **GitHub Release**, which is not part of that artifact meter. Each Actions run uses its own prerelease tag `checkpoint-<run_id>`, so two builds do not share assets. `GITHUB_TOKEN` only needs `contents: write`. The zstd stream is split into parts of at most 1900 MiB, under the 2 GiB release-asset limit. A manifest records the sha256 and size of every part. The next stage downloads the parts named by a `LATEST` asset, which is written only after the parts and the manifest are uploaded, and `scripts/checkpoint.sh restore` checks those checksums before it extracts anything.
 
-Pomelo therefore has two backends:
+The checkpoint release is created with `--prerelease` and `--latest=false`, and every upload sets those again. It is not the release GitHub shows as Latest. The browser APK stays on `v<version>`.
 
-| Backend | When | What it does |
+The tag and its assets are deleted when:
+
+- the APK release is published (that release is then marked Latest again)
+- the stage fails on its third attempt, which is the last automatic retry
+- [`retry.yml`](.github/workflows/retry.yml) sees a `checkpoint-*` prerelease published more than two days ago
+
+A failed attempt before the last one keeps the tag, so the rerun can resume.
+
+| Backend | When | Tradeoff |
 | --- | --- | --- |
-| GitHub artifacts | Default, when the S3 secrets below are unset | One artifact named `pomelo-out-<version>-arm64-<stage>`, retention **1 day**, `overwrite: true`, compression level 0 because the payload is already zstd. If a checkpoint is larger than 8 GiB it is split into 2 GiB parts, each its own artifact. After the next stage has uploaded its own checkpoint, the previous one is deleted. After the APK is published, every checkpoint artifact for that version is deleted. |
-| S3-compatible bucket | Optional. Intended for a free account | Parts are uploaded under a new generation key, and a `LATEST` pointer is written last. A failed upload leaves the previous generation readable. Old generations are deleted after the pointer moves. Cloudflare R2's free tier (10 GB storage, no egress fee) holds the ~1 GB checkpoint measured above, including a brief second copy during the handoff. |
+| GitHub Release | Default | Fits a free account without a separate storage bill. Parts must stay under 2 GiB. The tag is a prerelease and is removed when the build finishes or after two days. |
+| GitHub artifact | `CHECKPOINT_BACKEND=artifact` | Same handoff the reference pipeline uses. A ~981 MB checkpoint exceeds the free 500 MB allowance for as long as it exists. Retention is one day. |
+| S3-compatible bucket | Complete bucket settings, or `CHECKPOINT_BACKEND=s3` | Optional. Useful if you already have a bucket. It is not the default: a bucket without a spend cap can keep accruing, and a full compiler cache does not fit next to the checkpoint on a small free tier. |
 
-Use the S3 backend if the account must stay inside the free quota. The GitHub-artifact backend matches the reference pipeline and needs no secrets, and it will sit above the 500 MB allowance for as long as the checkpoint exists. One day of a 1 GB artifact is a small overage if billing is enabled, and a failed upload if a $0 budget blocks it.
-
-sccache is a separate optional cache for patch releases of a milestone that was already built. A full Chromium compile cache is many gigabytes. Do not point it at the same 10 GB free bucket as the checkpoint.
+sccache is a separate optional cache for later patch releases of a milestone that was already built. Leave it unset for this stock build.
 
 ## Start the first build
 
@@ -78,7 +85,7 @@ The build workflow does not run on push. After this workflow file is on the defa
 gh workflow run build.yml --repo hooiv/pomelo
 ```
 
-Nothing else is required. The optional settings below are unset on a fresh repository, so the run uses GitHub artifacts.
+Nothing else is required. The optional settings below are unset on a fresh repository, so each stage stores its checkpoint on the prerelease `checkpoint-<run_id>`.
 
 Watch the run. Stage 1 spends roughly half an hour fetching, then compiles until the time budget. If it stops with "build time budget" and uploads a checkpoint, stage 2 starts on its own. The release is tagged `v<version>` and the asset is `pomelo-<version>-arm64.apk`.
 
@@ -90,9 +97,10 @@ All of these are optional.
 
 | Name | Where | Purpose |
 | --- | --- | --- |
-| `CHECKPOINT_S3_BUCKET` | variable or secret | Bucket name. Turns on the S3 backend. |
-| `CHECKPOINT_S3_ENDPOINT` | variable or secret | For Cloudflare R2: `https://<accountid>.r2.cloudflarestorage.com` |
-| `CHECKPOINT_S3_REGION` | variable or secret | Defaults to `auto`, which is what R2 expects. |
+| `CHECKPOINT_BACKEND` | variable | `release` (default), `artifact`, or `s3`. `github` is accepted as an alias for `artifact`. |
+| `CHECKPOINT_S3_BUCKET` | variable or secret | Bucket name. With the endpoint and both keys, selects S3 unless `CHECKPOINT_BACKEND` says otherwise. |
+| `CHECKPOINT_S3_ENDPOINT` | variable or secret | S3 API endpoint, such as `https://<accountid>.r2.cloudflarestorage.com`. |
+| `CHECKPOINT_S3_REGION` | variable or secret | Defaults to `auto`. |
 | `CHECKPOINT_S3_ACCESS_KEY_ID` | secret | Access key. |
 | `CHECKPOINT_S3_SECRET_ACCESS_KEY` | secret | Secret key. |
 | `SCCACHE_BUCKET` | variable | sccache bucket. Off unless this and the endpoint are both set. |
@@ -101,7 +109,7 @@ All of these are optional.
 | `SCCACHE_ACCESS_KEY` | secret | sccache access key. |
 | `SCCACHE_SECRET_KEY` | secret | sccache secret key. |
 
-The S3 backend is used only when bucket, endpoint, and both keys are non-empty. AWS CLI is already on the GitHub-hosted image. Requests set checksum calculation to `when_required` so current AWS CLI builds can talk to R2.
+A complete S3 configuration selects that backend on its own. Set `CHECKPOINT_BACKEND=release` to keep release checkpoints even if those values are present. AWS CLI is already on the GitHub-hosted image. Requests set checksum calculation to `when_required` so current AWS CLI builds can talk to S3-compatible endpoints.
 
 ## Build locally
 
@@ -122,9 +130,11 @@ scripts/package.sh "$(scripts/resolve-version.sh)" dist
 
 **Disk.** GitHub's runner documentation lists 14 GB of SSD for `ubuntu-24.04`. That is the published guarantee. The reference run on 2026-11-19 saw a 145 GB root filesystem: about 115 GB free after cleanup, 71 GB free after the fetch (the checkout was ~44 GB), and 58 GB free at the end of stage 2. If a runner is actually limited to 14 GB, the fetch cannot succeed. Cleanup cannot create space the disk does not have.
 
-**Artifact quota.** The measured checkpoint is ~981 MB, about twice the free 500 MB allowance. Expect either a small storage charge or a rejected upload when a budget stops overage. Retention is one day, and a finished build deletes its checkpoint. Two stages can briefly keep the previous checkpoint and the new one.
+**Checkpoint lifetime.** The default prerelease is deleted when the APK is published and when a run fails for the third time. Anything still tagged `checkpoint-*` after two days is deleted by the hourly retry workflow. Until then the tag is a prerelease and is not Latest. A third-attempt failure throws the checkpoint away, so a later manual rerun fetches and compiles from the start of that stage.
 
-**R2 free tier.** 10 GB is enough for the checkpoint measured here. It is not enough for that checkpoint plus a full sccache. If a later stage's `out/` compresses past ~5 GB, holding the old and new copies at once can fill a 10 GB bucket; the old generation is deleted only after the new one is uploaded.
+**Artifact quota.** `CHECKPOINT_BACKEND=artifact` stores the same ~981 MB object as an Actions artifact. That is about twice the free 500 MB allowance. Expect a storage charge, or a rejected upload when a budget stops overage.
+
+**S3.** Optional. A bucket with no spend cap can keep billing after the build is gone. The release backend is the one that stays inside GitHub without that meter.
 
 **Time.** Plan on most of a day of runner time. A lost runner or a network error during `gclient sync` fails the stage; `retry.yml` reruns it from the last checkpoint, up to three attempts in a day.
 
