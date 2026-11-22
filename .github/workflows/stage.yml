@@ -49,6 +49,7 @@ jobs:
       PREVIOUS: ${{ inputs.previous }}
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      CHECKPOINT_BACKEND: ${{ vars.CHECKPOINT_BACKEND }}
       CHECKPOINT_S3_BUCKET: ${{ vars.CHECKPOINT_S3_BUCKET || secrets.CHECKPOINT_S3_BUCKET }}
       CHECKPOINT_S3_ENDPOINT: ${{ vars.CHECKPOINT_S3_ENDPOINT || secrets.CHECKPOINT_S3_ENDPOINT }}
       CHECKPOINT_S3_REGION: ${{ vars.CHECKPOINT_S3_REGION || secrets.CHECKPOINT_S3_REGION }}
@@ -85,14 +86,35 @@ jobs:
         if: steps.existing.outputs.done != 'true'
         run: |
           set -euo pipefail
+          s3_ready=false
           if [[ -n ${CHECKPOINT_S3_BUCKET:-} && -n ${CHECKPOINT_S3_ENDPOINT:-} \
                 && -n ${CHECKPOINT_S3_ACCESS_KEY_ID:-} && -n ${CHECKPOINT_S3_SECRET_ACCESS_KEY:-} ]]; then
-            echo "CHECKPOINT_BACKEND=s3" >> "$GITHUB_ENV"
-            echo "Checkpoint backend: S3-compatible bucket." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "CHECKPOINT_BACKEND=github" >> "$GITHUB_ENV"
-            echo "Checkpoint backend: GitHub Actions artifacts (1 day, overwritten)." >> "$GITHUB_STEP_SUMMARY"
+            s3_ready=true
           fi
+          case ${CHECKPOINT_BACKEND:-} in
+            "")
+              if [[ $s3_ready == true ]]; then
+                backend=s3
+              else
+                backend=release
+              fi
+              ;;
+            release) backend=release ;;
+            artifact | github) backend=artifact ;;
+            s3)
+              if [[ $s3_ready != true ]]; then
+                echo "CHECKPOINT_BACKEND=s3 but the S3 settings are incomplete" >&2
+                exit 1
+              fi
+              backend=s3
+              ;;
+            *)
+              echo "unknown CHECKPOINT_BACKEND=${CHECKPOINT_BACKEND}" >&2
+              exit 1
+              ;;
+          esac
+          echo "CHECKPOINT_BACKEND=${backend}" >> "$GITHUB_ENV"
+          echo "Checkpoint backend: ${backend}." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up sccache
         if: steps.existing.outputs.done != 'true' && env.SCCACHE_ENDPOINT != '' && env.SCCACHE_BUCKET != ''
@@ -116,7 +138,7 @@ jobs:
         run: scripts/apply-patches.sh
 
       - name: Download checkpoint
-        if: steps.existing.outputs.done != 'true' && !inputs.first && env.CHECKPOINT_BACKEND == 'github'
+        if: steps.existing.outputs.done != 'true' && !inputs.first && env.CHECKPOINT_BACKEND == 'artifact'
         uses: actions/download-artifact@v8
         with:
           pattern: pomelo-out-${{ inputs.version }}-arm64-${{ inputs.previous }}*
@@ -126,6 +148,10 @@ jobs:
       - name: Download checkpoint from S3
         if: steps.existing.outputs.done != 'true' && !inputs.first && env.CHECKPOINT_BACKEND == 's3'
         run: scripts/checkpoint.sh s3-download
+
+      - name: Download checkpoint release
+        if: steps.existing.outputs.done != 'true' && !inputs.first && env.CHECKPOINT_BACKEND == 'release'
+        run: scripts/checkpoint.sh release-download
 
       - name: Restore checkpoint
         if: steps.existing.outputs.done != 'true' && !inputs.first
@@ -170,8 +196,12 @@ jobs:
         if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 's3'
         run: scripts/checkpoint.sh s3-upload
 
+      - name: Upload checkpoint release
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'release'
+        run: scripts/checkpoint.sh release-upload
+
       - name: Upload checkpoint artifact
-        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'github' && steps.pack.outputs.mode == 'single'
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'artifact' && steps.pack.outputs.mode == 'single'
         uses: actions/upload-artifact@v7
         with:
           name: pomelo-out-${{ inputs.version }}-arm64-${{ inputs.stage }}
@@ -182,7 +212,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload split manifest
-        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'github' && steps.pack.outputs.mode == 'split'
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'artifact' && steps.pack.outputs.mode == 'split'
         uses: actions/upload-artifact@v7
         with:
           name: pomelo-out-${{ inputs.version }}-arm64-${{ inputs.stage }}-manifest
@@ -193,7 +223,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload split part 00
-        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'github' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-00') != ''
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'artifact' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-00') != ''
         uses: actions/upload-artifact@v7
         with:
           name: pomelo-out-${{ inputs.version }}-arm64-${{ inputs.stage }}-p00
@@ -204,7 +234,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload split part 01
-        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'github' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-01') != ''
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'artifact' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-01') != ''
         uses: actions/upload-artifact@v7
         with:
           name: pomelo-out-${{ inputs.version }}-arm64-${{ inputs.stage }}-p01
@@ -215,7 +245,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload split part 02
-        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'github' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-02') != ''
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'artifact' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-02') != ''
         uses: actions/upload-artifact@v7
         with:
           name: pomelo-out-${{ inputs.version }}-arm64-${{ inputs.stage }}-p02
@@ -226,7 +256,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload split part 03
-        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'github' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-03') != ''
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'artifact' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-03') != ''
         uses: actions/upload-artifact@v7
         with:
           name: pomelo-out-${{ inputs.version }}-arm64-${{ inputs.stage }}-p03
@@ -237,7 +267,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload split part 04
-        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'github' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-04') != ''
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'artifact' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-04') != ''
         uses: actions/upload-artifact@v7
         with:
           name: pomelo-out-${{ inputs.version }}-arm64-${{ inputs.stage }}-p04
@@ -248,7 +278,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload split part 05
-        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'github' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-05') != ''
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'artifact' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-05') != ''
         uses: actions/upload-artifact@v7
         with:
           name: pomelo-out-${{ inputs.version }}-arm64-${{ inputs.stage }}-p05
@@ -259,7 +289,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload split part 06
-        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'github' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-06') != ''
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'artifact' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-06') != ''
         uses: actions/upload-artifact@v7
         with:
           name: pomelo-out-${{ inputs.version }}-arm64-${{ inputs.stage }}-p06
@@ -270,7 +300,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload split part 07
-        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'github' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-07') != ''
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'artifact' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-07') != ''
         uses: actions/upload-artifact@v7
         with:
           name: pomelo-out-${{ inputs.version }}-arm64-${{ inputs.stage }}-p07
@@ -281,7 +311,7 @@ jobs:
           if-no-files-found: error
 
       - name: Drop the previous GitHub checkpoint
-        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'github' && !inputs.first && hashFiles('checkpoint/part-00') != ''
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'artifact' && !inputs.first && hashFiles('checkpoint/part-00') != ''
         run: scripts/cleanup-checkpoints.sh "pomelo-out-${VERSION}-arm64-${PREVIOUS}"
 
       - name: Publish the APK
@@ -289,9 +319,20 @@ jobs:
         run: scripts/release.sh "$VERSION" dist
 
       - name: Delete GitHub checkpoints
-        if: steps.build.outputs.done == 'true' && env.CHECKPOINT_BACKEND == 'github'
+        if: steps.build.outputs.done == 'true' && env.CHECKPOINT_BACKEND == 'artifact'
         run: scripts/cleanup-checkpoints.sh "pomelo-out-${VERSION}-arm64-"
 
       - name: Delete the S3 checkpoint
         if: steps.build.outputs.done == 'true' && env.CHECKPOINT_BACKEND == 's3'
         run: scripts/checkpoint.sh s3-delete
+
+      - name: Delete the checkpoint release
+        if: steps.build.outputs.done == 'true' && env.CHECKPOINT_BACKEND == 'release'
+        run: |
+          set -euo pipefail
+          scripts/checkpoint.sh release-delete
+          gh release edit "v${VERSION}" --latest
+
+      - name: Delete the checkpoint release after the last failed attempt
+        if: failure() && env.CHECKPOINT_BACKEND == 'release' && github.run_attempt >= 3
+        run: scripts/checkpoint.sh release-delete
