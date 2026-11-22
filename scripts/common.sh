@@ -44,6 +44,29 @@ apk_name() {
   printf 'pomelo-%s-arm64.apk\n' "$1"
 }
 
+# Branch and tag builds publish beside main, not onto v<version>.
+release_is_prerelease() {
+  [[ -n ${GITHUB_REF:-} && ${GITHUB_REF} != refs/heads/main ]]
+}
+
+release_ref_suffix() {
+  local ref=${GITHUB_REF:-unknown}
+  local cleaned sha
+  ref=${ref#refs/heads/}
+  ref=${ref#refs/tags/}
+  cleaned=$(printf '%s' "$ref" | tr -c 'A-Za-z0-9._-' '-')
+  cleaned=${cleaned#-}
+  cleaned=${cleaned%-}
+  sha=${GITHUB_SHA:-0000000}
+  sha=${sha:0:7}
+  printf '%s-%s\n' "$cleaned" "$sha"
+}
+
 release_tag() {
-  printf 'v%s\n' "$1"
+  local version=$1
+  if release_is_prerelease; then
+    printf 'v%s-%s\n' "$version" "$(release_ref_suffix)"
+  else
+    printf 'v%s\n' "$version"
+  fi
 }

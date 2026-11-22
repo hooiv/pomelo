@@ -2,21 +2,27 @@
 
 Pomelo is a Chromium-based Android browser. The discontinued Kiwi Browser is the inspiration for the kind of browser it aims to be; Pomelo is its own project.
 
-This repository does not contain the Chromium source tree. It pins one upstream tag and, later, an ordered patch series applied on top of a fresh checkout. Milestone 1 is only a reproducible **stock** build: `chrome_public_apk`, arm64, release, no Google API keys, and no functional patches.
+This repository does not contain the Chromium source tree. It pins one upstream tag and applies [`patches/series`](patches/series) on top of a fresh checkout. The APK is `chrome_public_apk` for arm64, release, with no Google API keys. Its name is Pomelo and its id is `io.github.hooiv.pomelo`, so it installs beside Chrome. It is signed with Chromium's public debug key and has no Play services, sign-in, or sync.
 
-The APK installs as `org.chromium.chrome`, signed with Chromium's public debug key. It can sit beside Google Chrome. It has no Play services, sign-in, or sync.
-
-## Milestone 1
+## This build
 
 - Tag in [`CHROMIUM_VERSION`](CHROMIUM_VERSION): **158.0.8127.43**
 - [Chromium Dash](https://chromiumdash.appspot.com/fetch_releases?channel=Stable&platform=Android&milestone=158) lists that as the newest Android Stable release on milestone 158 (previous version 158.0.8127.42), read 2026-11-22.
 - The [Chrome Releases blog](https://chromereleases.googleblog.com/2026/11/chrome-for-android-update_0281314271.html) on 2026-11-17 announced 158.0.8127.42. Dash has one newer point release, and the git tag [`158.0.8127.43`](https://chromium.googlesource.com/chromium/src.git/+/refs/tags/158.0.8127.43) exists. Higher 158 tags exist in git; they are not the Android Stable channel release.
-- [`args.gn`](args.gn): `target_os = "android"`, `target_cpu = "arm64"`, `is_debug = false`, `symbol_level = 0`. `is_desktop_android` is explicitly false.
-- [`patches/series`](patches/series) is a placeholder. [`scripts/apply-patches.sh`](scripts/apply-patches.sh) applies it in order and succeeds when every line is a comment.
+- [`args.gn`](args.gn): `target_os = "android"`, `target_cpu = "arm64"`, `is_debug = false`, `symbol_level = 0`, `is_desktop_android = true`, package `io.github.hooiv.pomelo`.
+- [`patches/series`](patches/series) is applied in order by [`scripts/apply-patches.sh`](scripts/apply-patches.sh). A patch that does not apply stops the build.
 
 ## Roadmap
 
-**v1.** Desktop-Android extensions, Manifest V2, CRX install, an on-device DevTools console, a bottom address bar, and night mode. The extension work is what turns `is_desktop_android` on.
+**v1, in [`patches/series`](patches/series), not yet proven on a device.** Desktop-Android extensions, Manifest V2, unpacked and sideloaded CRX install, a desktop user agent on the Chrome Web Store, on-device DevTools (Developer tools and Inspect) on phones, the address bar on the bottom with a setting to move it, and website darkening when the app theme is dark. A device build still has to confirm the patches compile and the UI behaves.
+
+| Patch | What it changes |
+| --- | --- |
+| `0001-rebrand-pomelo.patch` | Launcher and widget titles. The package id is `chrome_public_manifest_package` in `args.gn`. |
+| `0002-desktop-android-extensions.patch` | MV2, extension schemas, the phone extensions menu, unpacked install, and the Web Store user agent. Adapted from afterbird's M151 series. |
+| `0003-on-device-devtools.patch` | DevTools feature on, phone form factor allowed, Inspect menu item, phone viewport. |
+| `0004-bottom-address-bar.patch` | `AndroidBottomBar` on, default position bottom. Settings still offers top. |
+| `0005-night-mode.patch` | Theme setting can darken websites, and that default is allow while the UI is dark. |
 
 **v2.** Video downloader and resource sniffer, floating video, a built-in ad blocker, and userscripts.
 
@@ -24,11 +30,11 @@ The APK installs as `org.chromium.chrome`, signed with Chromium's public debug k
 
 ## How CI works
 
-A stock Android build does not finish inside one GitHub-hosted job. Jobs on `ubuntu-24.04` are killed at 6 hours, so [`.github/workflows/chain.yml`](.github/workflows/chain.yml) runs up to **12 stages**. Each stage is one job in [`.github/workflows/stage.yml`](.github/workflows/stage.yml):
+The Android build does not finish inside one GitHub-hosted job. Jobs on `ubuntu-24.04` are killed at 6 hours, so [`.github/workflows/chain.yml`](.github/workflows/chain.yml) runs up to **12 stages**. Each stage is one job in [`.github/workflows/stage.yml`](.github/workflows/stage.yml):
 
 1. Free disk space (preinstalled SDKs, toolchains, and Docker images) and add an 8 GB swapfile.
 2. Fetch the pinned tag with Android dependencies and **no git history**.
-3. Apply `patches/series` (a no-op today).
+3. Apply `patches/series`. A reject stops the job.
 4. Restore `out/arm64` from the previous stage's checkpoint, if there is one.
 5. Set every source file, except `src/out`, to `2000-01-01T00:00:00Z`, so the restored build directory is still newer than its inputs and ninja resumes.
 6. Run `autoninja` on `chrome_public_apk` until 35 minutes before a 330-minute budget measured from the start of the job. The job timeout is 358 minutes. A clean timeout exits 124 and is not a failure.

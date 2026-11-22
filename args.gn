@@ -1,8 +1,6 @@
-# Stock Pomelo Android release for milestone 1.
-# chrome_public_apk, arm64, no Google API keys, no desktop-Android extensions.
+# Pomelo Android release. chrome_public_apk, arm64, no Google API keys.
 # is_official_build stays false: this is still a release build (is_debug = false,
-# symbol_level = 0). The same flags, without an official/PGO build, are what fit
-# this tag on a free GitHub-hosted runner.
+# symbol_level = 0) sized for a free GitHub-hosted runner.
 
 target_os = "android"
 target_cpu = "arm64"
@@ -32,8 +30,11 @@ proprietary_codecs = true
 ffmpeg_branding = "Chrome"
 enable_hevc_parser_and_hw_decoder = true
 
-# Milestone 2 turns desktop-Android extensions on:
-#   is_desktop_android = true
-#   enable_desktop_android_extensions = true
-# Leave the flag off for this stock build.
-is_desktop_android = false
+# Installs beside Chrome (com.android.chrome) and stock Chromium
+# (org.chromium.chrome). The visible name is set in channel_constants.xml.
+chrome_public_manifest_package = "io.github.hooiv.pomelo"
+
+# Desktop-Android extensions. enable_desktop_android_extensions defaults to
+# this flag; set it explicitly so the extensions core is not dropped.
+is_desktop_android = true
+enable_desktop_android_extensions = true

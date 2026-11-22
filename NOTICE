@@ -8,5 +8,11 @@ Apache License, Version 2.0:
   https://www.apache.org/licenses/LICENSE-2.0
 
 Those portions remain available under the Apache License, Version 2.0.
+
+`patches/0002-desktop-android-extensions.patch` is adapted from
+danosito/afterbird `patches/m151`, which is BSD-3-Clause:
+
+  https://github.com/danosito/afterbird
+
 The Chromium tree this project builds is fetched at build time and is covered
 by Chromium's own licenses, not by this repository's license.

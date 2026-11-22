@@ -13,7 +13,7 @@ permissions:
   actions: write
 
 concurrency:
-  group: pomelo-stock-android
+  group: pomelo-android-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:

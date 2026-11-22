@@ -1,6 +1,9 @@
-# Pomelo patch series.
+# Pomelo patch series for Chromium 158.0.8127.43.
 # One path per line, relative to the repository root, applied in order to
 # chromium/src with git apply. Blank lines and lines starting with # are
 # ignored.
-#
-# Milestone 1 is a stock Chromium build. There are no patches yet.
+patches/0001-rebrand-pomelo.patch
+patches/0002-desktop-android-extensions.patch
+patches/0003-on-device-devtools.patch
+patches/0004-bottom-address-bar.patch
+patches/0005-night-mode.patch
