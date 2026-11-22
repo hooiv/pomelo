@@ -1,0 +1,139 @@
+# Up to 12 sequential stages. Each stage is one GitHub-hosted job, which
+# cannot run longer than 6 hours. A later stage is skipped once an earlier
+# stage publishes the APK.
+#
+# The chain shape is adapted from holtdroid/chromium-builds (Apache-2.0):
+# https://github.com/holtdroid/chromium-builds
+
+name: chain
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Chromium tag to build
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  stage-1:
+    uses: ./.github/workflows/stage.yml
+    secrets: inherit
+    with:
+      version: ${{ inputs.version }}
+      stage: "01"
+      first: true
+
+  stage-2:
+    needs: stage-1
+    if: needs.stage-1.outputs.done != 'true'
+    uses: ./.github/workflows/stage.yml
+    secrets: inherit
+    with:
+      version: ${{ inputs.version }}
+      stage: "02"
+      previous: "01"
+
+  stage-3:
+    needs: stage-2
+    if: needs.stage-2.outputs.done != 'true'
+    uses: ./.github/workflows/stage.yml
+    secrets: inherit
+    with:
+      version: ${{ inputs.version }}
+      stage: "03"
+      previous: "02"
+
+  stage-4:
+    needs: stage-3
+    if: needs.stage-3.outputs.done != 'true'
+    uses: ./.github/workflows/stage.yml
+    secrets: inherit
+    with:
+      version: ${{ inputs.version }}
+      stage: "04"
+      previous: "03"
+
+  stage-5:
+    needs: stage-4
+    if: needs.stage-4.outputs.done != 'true'
+    uses: ./.github/workflows/stage.yml
+    secrets: inherit
+    with:
+      version: ${{ inputs.version }}
+      stage: "05"
+      previous: "04"
+
+  stage-6:
+    needs: stage-5
+    if: needs.stage-5.outputs.done != 'true'
+    uses: ./.github/workflows/stage.yml
+    secrets: inherit
+    with:
+      version: ${{ inputs.version }}
+      stage: "06"
+      previous: "05"
+
+  stage-7:
+    needs: stage-6
+    if: needs.stage-6.outputs.done != 'true'
+    uses: ./.github/workflows/stage.yml
+    secrets: inherit
+    with:
+      version: ${{ inputs.version }}
+      stage: "07"
+      previous: "06"
+
+  stage-8:
+    needs: stage-7
+    if: needs.stage-7.outputs.done != 'true'
+    uses: ./.github/workflows/stage.yml
+    secrets: inherit
+    with:
+      version: ${{ inputs.version }}
+      stage: "08"
+      previous: "07"
+
+  stage-9:
+    needs: stage-8
+    if: needs.stage-8.outputs.done != 'true'
+    uses: ./.github/workflows/stage.yml
+    secrets: inherit
+    with:
+      version: ${{ inputs.version }}
+      stage: "09"
+      previous: "08"
+
+  stage-10:
+    needs: stage-9
+    if: needs.stage-9.outputs.done != 'true'
+    uses: ./.github/workflows/stage.yml
+    secrets: inherit
+    with:
+      version: ${{ inputs.version }}
+      stage: "10"
+      previous: "09"
+
+  stage-11:
+    needs: stage-10
+    if: needs.stage-10.outputs.done != 'true'
+    uses: ./.github/workflows/stage.yml
+    secrets: inherit
+    with:
+      version: ${{ inputs.version }}
+      stage: "11"
+      previous: "10"
+
+  stage-12:
+    needs: stage-11
+    if: needs.stage-11.outputs.done != 'true'
+    uses: ./.github/workflows/stage.yml
+    secrets: inherit
+    with:
+      version: ${{ inputs.version }}
+      stage: "12"
+      previous: "11"

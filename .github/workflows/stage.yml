@@ -1,0 +1,297 @@
+# One time-budgeted slice of the stock arm64 build.
+#
+# Disk cleanup, fixed source mtimes, the 330-minute budget with 35 minutes
+# reserved for packing, and the SIGINT resume are adapted from
+# holtdroid/chromium-builds (Apache-2.0):
+# https://github.com/holtdroid/chromium-builds
+
+name: stage
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Chromium tag to build
+        required: true
+        type: string
+      stage:
+        description: Two-digit stage id, 01 through 12
+        required: true
+        type: string
+      previous:
+        description: Previous stage id. Empty on the first stage.
+        required: false
+        type: string
+        default: ""
+      first:
+        description: True only for the first stage
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      done:
+        description: True when chrome_public_apk has been published
+        value: ${{ jobs.build.outputs.done }}
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 358
+    outputs:
+      done: ${{ steps.existing.outputs.done || steps.build.outputs.done }}
+    env:
+      VERSION: ${{ inputs.version }}
+      STAGE: ${{ inputs.stage }}
+      PREVIOUS: ${{ inputs.previous }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      CHECKPOINT_S3_BUCKET: ${{ vars.CHECKPOINT_S3_BUCKET || secrets.CHECKPOINT_S3_BUCKET }}
+      CHECKPOINT_S3_ENDPOINT: ${{ vars.CHECKPOINT_S3_ENDPOINT || secrets.CHECKPOINT_S3_ENDPOINT }}
+      CHECKPOINT_S3_REGION: ${{ vars.CHECKPOINT_S3_REGION || secrets.CHECKPOINT_S3_REGION }}
+      CHECKPOINT_S3_ACCESS_KEY_ID: ${{ secrets.CHECKPOINT_S3_ACCESS_KEY_ID }}
+      CHECKPOINT_S3_SECRET_ACCESS_KEY: ${{ secrets.CHECKPOINT_S3_SECRET_ACCESS_KEY }}
+      SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
+      SCCACHE_REGION: ${{ vars.SCCACHE_REGION }}
+      SCCACHE_ENDPOINT: ${{ secrets.SCCACHE_ENDPOINT }}
+      SCCACHE_S3_KEY_PREFIX: arm64
+      SCCACHE_S3_USE_SSL: "true"
+      SCCACHE_IDLE_TIMEOUT: "0"
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_ACCESS_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_SECRET_KEY }}
+    steps:
+      - name: Record start
+        run: echo "STARTED=$(date +%s)" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v7
+
+      - name: Skip if this version is already published
+        id: existing
+        if: inputs.first
+        run: |
+          set -euo pipefail
+          if scripts/release-exists.sh "$VERSION"; then
+            echo "done=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Free disk space
+        if: steps.existing.outputs.done != 'true'
+        run: scripts/free-disk.sh
+
+      - name: Choose checkpoint backend
+        if: steps.existing.outputs.done != 'true'
+        run: |
+          set -euo pipefail
+          if [[ -n ${CHECKPOINT_S3_BUCKET:-} && -n ${CHECKPOINT_S3_ENDPOINT:-} \
+                && -n ${CHECKPOINT_S3_ACCESS_KEY_ID:-} && -n ${CHECKPOINT_S3_SECRET_ACCESS_KEY:-} ]]; then
+            echo "CHECKPOINT_BACKEND=s3" >> "$GITHUB_ENV"
+            echo "Checkpoint backend: S3-compatible bucket." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "CHECKPOINT_BACKEND=github" >> "$GITHUB_ENV"
+            echo "Checkpoint backend: GitHub Actions artifacts (1 day, overwritten)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Set up sccache
+        if: steps.existing.outputs.done != 'true' && env.SCCACHE_ENDPOINT != '' && env.SCCACHE_BUCKET != ''
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 12 --retry-all-errors --retry-delay 30 \
+            -o "${RUNNER_TEMP:?}/sccache.tar.gz" \
+            https://github.com/mozilla/sccache/releases/download/v0.19.0/sccache-v0.19.0-x86_64-unknown-linux-musl.tar.gz
+          sudo tar -xzf "${RUNNER_TEMP}/sccache.tar.gz" -C /usr/local/bin --strip-components=1 --wildcards '*/sccache'
+          sccache --start-server
+
+      - name: Fetch Chromium
+        if: steps.existing.outputs.done != 'true'
+        run: |
+          set -euo pipefail
+          scripts/fetch.sh "$VERSION"
+          df -h /
+
+      - name: Apply patches
+        if: steps.existing.outputs.done != 'true'
+        run: scripts/apply-patches.sh
+
+      - name: Download checkpoint
+        if: steps.existing.outputs.done != 'true' && !inputs.first && env.CHECKPOINT_BACKEND == 'github'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: pomelo-out-${{ inputs.version }}-arm64-${{ inputs.previous }}*
+          path: checkpoint
+          merge-multiple: true
+
+      - name: Download checkpoint from S3
+        if: steps.existing.outputs.done != 'true' && !inputs.first && env.CHECKPOINT_BACKEND == 's3'
+        run: scripts/checkpoint.sh s3-download
+
+      - name: Restore checkpoint
+        if: steps.existing.outputs.done != 'true' && !inputs.first
+        run: |
+          set -euo pipefail
+          scripts/checkpoint.sh restore
+          df -h /
+
+      - name: Fix source mtimes
+        if: steps.existing.outputs.done != 'true'
+        run: scripts/touch-sources.sh
+
+      - name: Build
+        id: build
+        if: steps.existing.outputs.done != 'true'
+        run: |
+          set -euo pipefail
+          limit=$(( ${STARTED:?} + 330 * 60 - 35 * 60 - $(date +%s) ))
+          echo "build time budget: $((limit / 60)) min"
+          if (( limit < 60 )); then
+            echo "less than one minute of build budget remains" >&2
+            exit 1
+          fi
+          scripts/ci-build.sh "$limit"
+          df -h /
+
+      - name: sccache stats
+        if: always() && env.SCCACHE_ENDPOINT != '' && env.SCCACHE_BUCKET != ''
+        run: sccache --show-stats || true
+
+      - name: Pack checkpoint
+        id: pack
+        if: steps.build.outputs.done == 'false'
+        run: |
+          set -euo pipefail
+          scripts/checkpoint.sh pack
+          mode=$(cat checkpoint/mode)
+          echo "mode=${mode}" >> "$GITHUB_OUTPUT"
+          ls -lh checkpoint
+
+      - name: Upload checkpoint to S3
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 's3'
+        run: scripts/checkpoint.sh s3-upload
+
+      - name: Upload checkpoint artifact
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'github' && steps.pack.outputs.mode == 'single'
+        uses: actions/upload-artifact@v7
+        with:
+          name: pomelo-out-${{ inputs.version }}-arm64-${{ inputs.stage }}
+          path: checkpoint/
+          retention-days: 1
+          overwrite: true
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Upload split manifest
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'github' && steps.pack.outputs.mode == 'split'
+        uses: actions/upload-artifact@v7
+        with:
+          name: pomelo-out-${{ inputs.version }}-arm64-${{ inputs.stage }}-manifest
+          path: checkpoint/manifest
+          retention-days: 1
+          overwrite: true
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Upload split part 00
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'github' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-00') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: pomelo-out-${{ inputs.version }}-arm64-${{ inputs.stage }}-p00
+          path: checkpoint/part-00
+          retention-days: 1
+          overwrite: true
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Upload split part 01
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'github' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-01') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: pomelo-out-${{ inputs.version }}-arm64-${{ inputs.stage }}-p01
+          path: checkpoint/part-01
+          retention-days: 1
+          overwrite: true
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Upload split part 02
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'github' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-02') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: pomelo-out-${{ inputs.version }}-arm64-${{ inputs.stage }}-p02
+          path: checkpoint/part-02
+          retention-days: 1
+          overwrite: true
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Upload split part 03
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'github' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-03') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: pomelo-out-${{ inputs.version }}-arm64-${{ inputs.stage }}-p03
+          path: checkpoint/part-03
+          retention-days: 1
+          overwrite: true
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Upload split part 04
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'github' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-04') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: pomelo-out-${{ inputs.version }}-arm64-${{ inputs.stage }}-p04
+          path: checkpoint/part-04
+          retention-days: 1
+          overwrite: true
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Upload split part 05
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'github' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-05') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: pomelo-out-${{ inputs.version }}-arm64-${{ inputs.stage }}-p05
+          path: checkpoint/part-05
+          retention-days: 1
+          overwrite: true
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Upload split part 06
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'github' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-06') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: pomelo-out-${{ inputs.version }}-arm64-${{ inputs.stage }}-p06
+          path: checkpoint/part-06
+          retention-days: 1
+          overwrite: true
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Upload split part 07
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'github' && steps.pack.outputs.mode == 'split' && hashFiles('checkpoint/part-07') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: pomelo-out-${{ inputs.version }}-arm64-${{ inputs.stage }}-p07
+          path: checkpoint/part-07
+          retention-days: 1
+          overwrite: true
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Drop the previous GitHub checkpoint
+        if: steps.build.outputs.done == 'false' && env.CHECKPOINT_BACKEND == 'github' && !inputs.first && hashFiles('checkpoint/part-00') != ''
+        run: scripts/cleanup-checkpoints.sh "pomelo-out-${VERSION}-arm64-${PREVIOUS}"
+
+      - name: Publish the APK
+        if: steps.build.outputs.done == 'true'
+        run: scripts/release.sh "$VERSION" dist
+
+      - name: Delete GitHub checkpoints
+        if: steps.build.outputs.done == 'true' && env.CHECKPOINT_BACKEND == 'github'
+        run: scripts/cleanup-checkpoints.sh "pomelo-out-${VERSION}-arm64-"
+
+      - name: Delete the S3 checkpoint
+        if: steps.build.outputs.done == 'true' && env.CHECKPOINT_BACKEND == 's3'
+        run: scripts/checkpoint.sh s3-delete

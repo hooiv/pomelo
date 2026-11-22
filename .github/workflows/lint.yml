@@ -1,0 +1,29 @@
+name: lint
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install shellcheck, zstd, and actionlint
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck zstd
+          curl -fsSL -o /tmp/actionlint.tgz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          sudo tar -C /usr/local/bin -xzf /tmp/actionlint.tgz actionlint
+      - name: shellcheck
+        run: shellcheck -x -P SCRIPTDIR scripts/*.sh
+      - name: actionlint
+        run: actionlint
+      - name: self-test
+        run: scripts/self-test.sh

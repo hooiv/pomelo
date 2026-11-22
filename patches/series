@@ -1,0 +1,6 @@
+# Pomelo patch series.
+# One path per line, relative to the repository root, applied in order to
+# chromium/src with git apply. Blank lines and lines starting with # are
+# ignored.
+#
+# Milestone 1 is a stock Chromium build. There are no patches yet.
