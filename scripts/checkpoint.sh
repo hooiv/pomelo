@@ -254,10 +254,29 @@ check_asset_size() {
 }
 
 assert_checkpoint_release() {
-  local tag=$1 pre latest
-  read -r pre latest < <(gh release view "$tag" --json isPrerelease,isLatest --jq '[.isPrerelease,.isLatest] | @tsv')
+  local tag=$1 pre latest err status
+  # isLatest is absent from gh release view --json on the GitHub-hosted
+  # runner's gh. isPrerelease is present. Latest is the REST release, and
+  # that endpoint 404s when the repo has no stable release.
+  pre=$(gh release view "$tag" --json isPrerelease --jq .isPrerelease)
   [[ $pre == true ]] || die "checkpoint release $tag is not a prerelease"
-  [[ $latest == false ]] || die "checkpoint release $tag is marked latest"
+  err=$(mktemp)
+  set +e
+  latest=$(gh api "repos/${GH_REPO:?}/releases/latest" --jq .tag_name 2>"$err")
+  status=$?
+  set -e
+  if [[ $status -ne 0 ]]; then
+    if grep -Eq '404|Not Found' "$err"; then
+      rm -f "$err"
+      return 0
+    fi
+    cat "$err" >&2
+    rm -f "$err"
+    die "could not read the latest release"
+  fi
+  rm -f "$err"
+  [[ -z $latest || $latest == null ]] && return 0
+  [[ $latest != "$tag" ]] || die "checkpoint release $tag is marked latest"
 }
 
 ensure_checkpoint_release() {

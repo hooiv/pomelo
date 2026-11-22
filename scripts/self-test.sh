@@ -117,6 +117,14 @@ cat >"$mock_bin/gh" <<'EOF'
 #!/bin/bash
 set -euo pipefail
 printf '%s\n' "$*" >> "${MOCK_GH_LOG:?}"
+if [[ $1 == api ]]; then
+  if [[ ${MOCK_GH_LATEST:-404} == 404 ]]; then
+    printf '%s\n' 'gh: Not Found (HTTP 404)' '{"message":"Not Found","status":"404"}' >&2
+    exit 1
+  fi
+  printf '%s\n' "$MOCK_GH_LATEST"
+  exit 0
+fi
 [[ $1 == release ]] || exit 1
 sub=$2
 shift 2
@@ -124,11 +132,11 @@ case $sub in
   view)
     kind=""
     for arg in "$@"; do
-      [[ $arg == isPrerelease,isLatest ]] && kind=flags
+      [[ $arg == isPrerelease ]] && kind=prerelease
       [[ $arg == assets ]] && kind=assets
     done
-    if [[ $kind == flags ]]; then
-      printf 'true\tfalse\n'
+    if [[ $kind == prerelease ]]; then
+      printf 'true\n'
       exit 0
     fi
     if [[ $kind == assets ]]; then
@@ -197,6 +205,17 @@ printf 'payload-two\n' >"$tmp/cr/src/out/arm64/b.txt"
 head -c 80000 /dev/urandom >"$tmp/cr/src/out/arm64/blob.bin"
 CHROMIUM_ROOT=$tmp/cr CHECKPOINT_DIR=$tmp/ckpt CHECKPOINT_PART_BYTES=20000 \
   "$script_dir/checkpoint.sh" pack
+export GH_REPO=hooiv/pomelo
+if PATH="$mock_bin:$PATH" MOCK_GH_LOG=$mock_log MOCK_GH_STATE=$mock_state \
+  MOCK_GH_LATEST=checkpoint-99 \
+  GITHUB_RUN_ID=99 STAGE=01 CHECKPOINT_DIR=$tmp/ckpt \
+  "$script_dir/checkpoint.sh" release-upload; then
+  die "checkpoint release marked latest was accepted"
+fi
+if grep -q 'isLatest' "$mock_log"; then
+  die "gh was asked for isLatest"
+fi
+grep -q 'repos/hooiv/pomelo/releases/latest' "$mock_log"
 PATH="$mock_bin:$PATH" MOCK_GH_LOG=$mock_log MOCK_GH_STATE=$mock_state \
   GITHUB_RUN_ID=99 STAGE=01 CHECKPOINT_DIR=$tmp/ckpt \
   "$script_dir/checkpoint.sh" release-upload
@@ -215,6 +234,7 @@ CHROMIUM_ROOT=$tmp/cr CHECKPOINT_DIR=$tmp/ckpt \
   "$script_dir/checkpoint.sh" restore
 cmp "$tmp/cr/src/out/arm64/nested/a.txt" <(printf 'payload-one\n')
 PATH="$mock_bin:$PATH" MOCK_GH_LOG=$mock_log MOCK_GH_STATE=$mock_state \
+  MOCK_GH_LATEST=v158.0.8127.43 \
   GITHUB_RUN_ID=99 STAGE=02 CHECKPOINT_DIR=$tmp/ckpt \
   "$script_dir/checkpoint.sh" release-upload
 [[ ! -f $mock_state/assets/s01-manifest ]]
