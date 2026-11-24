@@ -17,20 +17,14 @@ asset=$(apk_name "$version")
 
 notes=$(mktemp)
 trap 'rm -f "$notes"' EXIT
-cat >"$notes" <<EOF
-Stock Pomelo build of Chromium \`$version\` for Android arm64.
+write_release_notes "$version" "$notes"
+if release_is_prerelease; then
+  title="Pomelo $version for Android"
+else
+  title="Pomelo $version v$(read_pomelo_revision) for Android"
+fi
 
-- Target: \`chrome_public_apk\` (\`org.chromium.chrome\`)
-- \`is_debug = false\`, \`symbol_level = 0\`, \`is_desktop_android = false\`
-- No Google API keys
-- No Pomelo patches (empty \`patches/series\`)
-- Signed with Chromium's public debug key
-
-This is upstream Chromium, fetched at the pinned tag and built without
-modifying it. It does not include Google Play services, sign-in, or sync.
-EOF
-
-create_args=(--title "Pomelo $version for Android" --latest=false --notes-file "$notes")
+create_args=(--title "$title" --latest=false --notes-file "$notes")
 if release_is_prerelease; then
   create_args+=(--prerelease)
 fi
