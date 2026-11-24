@@ -38,7 +38,7 @@ The Android build does not finish inside one GitHub-hosted job. Jobs on `ubuntu-
 4. Restore `out/arm64` from the previous stage's checkpoint, if there is one.
 5. Set every source file, except `src/out`, to `2000-01-01T00:00:00Z`, so the restored build directory is still newer than its inputs and ninja resumes.
 6. Run `autoninja` on `chrome_public_apk` until 35 minutes before a 330-minute budget measured from the start of the job. The job timeout is 358 minutes. A clean timeout exits 124 and is not a failure.
-7. If the APK linked, publish it on `v<version>` and delete the checkpoint prerelease. Otherwise pack `out/arm64` and upload it to `checkpoint-<run_id>` for the next stage.
+7. If the APK linked, publish it on `v<chromium>-v<POMELO_REVISION>` and delete the checkpoint prerelease. Otherwise pack `out/arm64` and upload it to `checkpoint-<run_id>` for the next stage.
 
 [`retry.yml`](.github/workflows/retry.yml) reruns the failed jobs of a `build` run from the last day, up to three attempts, when that run finishes and again hourly. A rerun keeps the checkpoint prerelease. The third failure deletes it. The same workflow deletes any `checkpoint-*` release older than two days. It does not start a new build.
 
@@ -62,7 +62,7 @@ That arm64 build included WebView, which Pomelo does not build. Two stages is th
 
 The default backend is a **GitHub Release**, which is not part of that artifact meter. Each Actions run uses its own prerelease tag `checkpoint-<run_id>`, so two builds do not share assets. `GITHUB_TOKEN` only needs `contents: write`. The zstd stream is split into parts of at most 1900 MiB, under the 2 GiB release-asset limit. A manifest records the sha256 and size of every part. The next stage downloads the parts named by a `LATEST` asset, which is written only after the parts and the manifest are uploaded, and `scripts/checkpoint.sh restore` checks those checksums before it extracts anything.
 
-The checkpoint release is created with `--prerelease` and `--latest=false`, and every upload sets those again. It is not the release GitHub shows as Latest. The browser APK stays on `v<version>`.
+The checkpoint release is created with `--prerelease` and `--latest=false`, and every upload sets those again. It is not the release GitHub shows as Latest. A main build publishes `v<chromium>-v<POMELO_REVISION>` and that tag is marked Latest. Branch builds stay prereleases and do not take Latest.
 
 The tag and its assets are deleted when:
 
@@ -93,7 +93,7 @@ gh workflow run build.yml --repo hooiv/pomelo
 
 Nothing else is required. The optional settings below are unset on a fresh repository, so each stage stores its checkpoint on the prerelease `checkpoint-<run_id>`.
 
-Watch the run. Stage 1 spends roughly half an hour fetching, then compiles until the time budget. If it stops with "build time budget" and uploads a checkpoint, stage 2 starts on its own. The release is tagged `v<version>` and the asset is `pomelo-<version>-arm64.apk`.
+Watch the run. Stage 1 spends roughly half an hour fetching, then compiles until the time budget. If it stops with "build time budget" and uploads a checkpoint, stage 2 starts on its own. A main release is tagged `v<chromium>-v<POMELO_REVISION>` (see `POMELO_REVISION`) and the asset is `pomelo-<version>-arm64.apk`. Bump `POMELO_REVISION` before publishing another feature set of the same Chromium version so the new APK does not replace the previous download.
 
 `workflow_dispatch` is registered from the default branch. A pull request that only *adds* the workflow cannot be started until that file is on `main`.
 
