@@ -1,0 +1,1062 @@
+Pomelo v2 phone tools on top of the v1 series.
+
+Volume keys scroll the page unless a text field, fullscreen video, or
+picture-in-picture has focus. More tools gains float video, page media, an
+ad-blocker toggle, a volume-key toggle, userscripts, and customize menu.
+Customize menu hides a fixed set of overflow ids.
+
+Page media lists video and audio addresses seen by a request throttle plus
+video/audio elements. A tap starts Android DownloadManager.
+
+The ad blocker is an original host-suffix throttle. The list is not EasyList,
+AdGuard, or any GPL engine. Main-frame navigations are not blocked. Userscripts
+saved in the browser run on http(s) pages after load. An extension that
+declares the userScripts permission is allowed until that pref is turned off,
+so a Tampermonkey-style extension can register scripts.
+
+diff --git aa/chrome/android/chrome_java_sources.gni bb/chrome/android/chrome_java_sources.gni
+index 21b0b69ba1..1552c0d1a2 100644
+--- aa/chrome/android/chrome_java_sources.gni
++++ bb/chrome/android/chrome_java_sources.gni
+@@ -1014,6 +1014,7 @@ chrome_java_sources = [
+   "java/src/org/chromium/chrome/browser/photo_picker/DecoderServiceImpl.java",
+   "java/src/org/chromium/chrome/browser/policy/PolicyAuditor.java",
+   "java/src/org/chromium/chrome/browser/policy/PolicyAuditorBridge.java",
++  "java/src/org/chromium/chrome/browser/pomelo/PomeloTools.java",
+   "java/src/org/chromium/chrome/browser/privacy/settings/DoNotTrackSettings.java",
+   "java/src/org/chromium/chrome/browser/privacy/settings/IncognitoLockSettings.java",
+   "java/src/org/chromium/chrome/browser/privacy/settings/PasswordEchoSettingHandler.java",
+diff --git aa/chrome/android/java/res/values/ids.xml bb/chrome/android/java/res/values/ids.xml
+index 665fd20080..c730e72b8a 100644
+--- aa/chrome/android/java/res/values/ids.xml
++++ bb/chrome/android/java/res/values/ids.xml
+@@ -51,6 +51,12 @@ found in the LICENSE file.
+     <item type="id" name="open_home_page" />
+     <item type="id" name="open_recently_closed_tab" />
+     <item type="id" name="open_tab_strip_context_menu" />
++    <item type="id" name="pomelo_ad_block" />
++    <item type="id" name="pomelo_customize_menu" />
++    <item type="id" name="pomelo_float_video" />
++    <item type="id" name="pomelo_media" />
++    <item type="id" name="pomelo_userscripts" />
++    <item type="id" name="pomelo_volume_scroll" />
+     <item type="id" name="print_id" />
+     <item type="id" name="quit_chrome" />
+     <item type="id" name="reload_ignoring_cache" />
+diff --git aa/chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java bb/chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java
+index 03e7a82d7c..b28a7a8482 100644
+--- aa/chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java
++++ bb/chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java
+@@ -172,6 +172,7 @@ import org.chromium.chrome.browser.night_mode.WebContentsDarkModeController;
+ import org.chromium.chrome.browser.night_mode.WebContentsDarkModeMessageController;
+ import org.chromium.chrome.browser.ntp.NewTabPageUma;
+ import org.chromium.chrome.browser.offlinepages.OfflinePageUtils;
++import org.chromium.chrome.browser.pomelo.PomeloTools;
+ import org.chromium.chrome.browser.omaha.UpdateMenuItemHelper;
+ import org.chromium.chrome.browser.omaha.inline.InAppUpdateController;
+ import org.chromium.chrome.browser.open_in_app.OpenInAppDelegate;
+@@ -1024,6 +1025,7 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
+                     public void onPageLoadFinished(Tab tab, GURL url) {
+                         postDeferredStartupIfNeeded();
+                         OfflinePageUtils.showOfflineSnackbarIfNecessary(tab);
++                        PomeloTools.onPageLoadFinished(tab);
+                     }
+ 
+                     @Override
+@@ -2198,6 +2200,9 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
+ 
+     @Override
+     public boolean dispatchKeyEvent(KeyEvent event) {
++        if (PomeloTools.handleVolumeKey(this, event)) {
++            return true;
++        }
+         if (mAcceleratorManager != null && mAcceleratorManager.processKeyEvent(event)) {
+             return true;
+         }
+@@ -2367,6 +2372,7 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
+     @Override
+     public void finishNativeInitialization() {
+         mNativeInitialized = true;
++        PomeloTools.syncNativeFromPrefs();
+ 
+         if (ChromeFeatureList.isEnabled(ChromeFeatureList.UMA_SESSION_CORRECTNESS_FIXES)) {
+             startUmaSession();
+@@ -3564,6 +3570,10 @@ public abstract class ChromeActivity extends AsyncInitializationActivity
+             return true;
+         }
+ 
++        if (PomeloTools.handleMenuAction(this, id)) {
++            return true;
++        }
++
+         return false;
+     }
+ 
+diff --git ab/chrome/android/java/src/org/chromium/chrome/browser/pomelo/PomeloTools.java bb/chrome/android/java/src/org/chromium/chrome/browser/pomelo/PomeloTools.java
+new file mode 100644
+index 0000000000..d077fa9e51
+--- /dev/null
++++ bb/chrome/android/java/src/org/chromium/chrome/browser/pomelo/PomeloTools.java
+@@ -0,0 +1,486 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++package org.chromium.chrome.browser.pomelo;
++
++import android.app.DownloadManager;
++import android.content.Context;
++import android.content.SharedPreferences;
++import android.content.res.Resources;
++import android.net.Uri;
++import android.text.InputType;
++import android.view.KeyEvent;
++import android.widget.CheckBox;
++import android.widget.EditText;
++import android.widget.LinearLayout;
++import android.widget.Toast;
++
++import androidx.appcompat.app.AlertDialog;
++
++import org.chromium.base.ContextUtils;
++import org.chromium.build.annotations.NullMarked;
++import org.chromium.build.annotations.Nullable;
++import org.chromium.chrome.R;
++import org.chromium.chrome.browser.app.ChromeActivity;
++import org.chromium.chrome.browser.app.appmenu.AppMenuItemTheme;
++import org.chromium.chrome.browser.app.appmenu.AppMenuItemUtils;
++import org.chromium.chrome.browser.content.ContentUtils;
++import org.chromium.chrome.browser.tab.Tab;
++import org.chromium.chrome.browser.ui.appmenu.AppMenuItemProperties;
++import org.chromium.chrome.browser.ui.appmenu.AppMenuItemWithSubmenuProperties;
++import org.chromium.content_public.browser.JavaScriptCallback;
++import org.chromium.content_public.browser.RenderFrameHost;
++import org.chromium.content_public.browser.WebContents;
++import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
++import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
++import org.chromium.ui.modelutil.PropertyModel;
++import org.chromium.url.GURL;
++import org.json.JSONArray;
++import org.json.JSONException;
++import org.json.JSONObject;
++
++import java.util.ArrayList;
++import java.util.HashSet;
++import java.util.LinkedHashSet;
++import java.util.List;
++import java.util.Set;
++import java.util.function.Supplier;
++
++/**
++ * Phone tools that are not in stock Chrome: volume-key scrolling, a hideable overflow menu,
++ * picture-in-picture for the current video, a media sniffer, a small built-in ad blocker, and a
++ * userscript runner. Userscript extensions such as Tampermonkey keep working through the desktop
++ * extension support landed in v1; this class also runs scripts saved in the browser itself.
++ */
++@NullMarked
++public class PomeloTools {
++    private static final String KEY_VOLUME = "volume_scroll";
++    private static final String KEY_ADBLOCK = "ad_block";
++    private static final String KEY_HIDDEN = "hidden_menu_ids";
++    private static final String KEY_SCRIPTS = "userscripts";
++    private static final int ISOLATED_WORLD_MAIN = 0;
++    private static final int SCROLL_PX = 280;
++
++    private PomeloTools() {}
++
++    private static SharedPreferences prefs() {
++        return ContextUtils.getAppSharedPreferences();
++    }
++
++    public static void syncNativeFromPrefs() {
++        ContentUtils.setPomeloAdBlockEnabled(prefs().getBoolean(KEY_ADBLOCK, true));
++    }
++
++    public static boolean handleVolumeKey(ChromeActivity activity, KeyEvent event) {
++        if (!prefs().getBoolean(KEY_VOLUME, true)) return false;
++        int key = event.getKeyCode();
++        if (key != KeyEvent.KEYCODE_VOLUME_DOWN && key != KeyEvent.KEYCODE_VOLUME_UP) {
++            return false;
++        }
++        if (event.getAction() != KeyEvent.ACTION_DOWN) return true;
++        if (activity.isInPictureInPictureMode()) return false;
++        Tab tab = activity.getActivityTab();
++        if (tab == null) return false;
++        WebContents webContents = tab.getWebContents();
++        if (webContents == null || webContents.isFocusedElementEditable()) return false;
++        if (webContents.isFullscreenForCurrentTab()) return false;
++        int dy = key == KeyEvent.KEYCODE_VOLUME_DOWN ? SCROLL_PX : -SCROLL_PX;
++        if (event.getRepeatCount() > 0) dy *= 2;
++        runOnPage(webContents, "window.scrollBy(0," + dy + ");", null);
++        return true;
++    }
++
++    public static boolean handleMenuAction(ChromeActivity activity, int id) {
++        if (id == R.id.pomelo_float_video) {
++            floatVideo(activity);
++            return true;
++        }
++        if (id == R.id.pomelo_media) {
++            showMedia(activity);
++            return true;
++        }
++        if (id == R.id.pomelo_ad_block) {
++            boolean enabled = !prefs().getBoolean(KEY_ADBLOCK, true);
++            prefs().edit().putBoolean(KEY_ADBLOCK, enabled).apply();
++            if (activity.didFinishNativeInitialization()) {
++                ContentUtils.setPomeloAdBlockEnabled(enabled);
++            }
++            toast(activity, enabled ? "Ad blocker on" : "Ad blocker off");
++            return true;
++        }
++        if (id == R.id.pomelo_volume_scroll) {
++            boolean enabled = !prefs().getBoolean(KEY_VOLUME, true);
++            prefs().edit().putBoolean(KEY_VOLUME, enabled).apply();
++            toast(activity, enabled ? "Volume keys scroll the page" : "Volume keys change volume");
++            return true;
++        }
++        if (id == R.id.pomelo_userscripts) {
++            showUserscripts(activity);
++            return true;
++        }
++        if (id == R.id.pomelo_customize_menu) {
++            showCustomizeMenu(activity);
++            return true;
++        }
++        return false;
++    }
++
++    public static void onPageLoadFinished(Tab tab) {
++        GURL url = tab.getUrl();
++        String scheme = url.getScheme();
++        if (!"http".equals(scheme) && !"https".equals(scheme)) return;
++        WebContents webContents = tab.getWebContents();
++        if (webContents == null) return;
++        String code = enabledUserscriptSource();
++        if (code.isEmpty()) return;
++        runOnPage(webContents, code, null);
++    }
++
++    public static ListItem standardItem(
++            Context context, AppMenuItemTheme theme, int id, int titleId, boolean iconAtStart) {
++        return AppMenuItemUtils.createStandardListItem(
++                AppMenuItemUtils.buildModelForStandardMenuItem(
++                        context, theme, id, titleId, Resources.ID_NULL, iconAtStart),
++                /* showIcon= */ false);
++    }
++
++    public static void retitle(ListItem item, String title) {
++        item.model.set(AppMenuItemProperties.TITLE, title);
++    }
++
++    public static String adBlockTitle() {
++        return prefs().getBoolean(KEY_ADBLOCK, true) ? "Ad blocker: on" : "Ad blocker: off";
++    }
++
++    public static String volumeTitle() {
++        return prefs().getBoolean(KEY_VOLUME, true)
++                ? "Volume keys: scroll"
++                : "Volume keys: volume";
++    }
++
++    /** Drops overflow entries the user hid, including one level of submenu. */
++    public static void filterMenu(ModelList modelList) {
++        Set<String> hidden = hiddenIds();
++        for (int i = modelList.size() - 1; i >= 0; --i) {
++            ListItem item = modelList.get(i);
++            wrapSubmenu(item, hidden);
++            if (shouldHide(item.model, hidden)) modelList.remove(item);
++        }
++    }
++
++    private static void wrapSubmenu(ListItem item, Set<String> hidden) {
++        PropertyModel model = item.model;
++        if (!model.containsKey(AppMenuItemWithSubmenuProperties.SUBMENU_PROVIDER)) return;
++        Supplier<List<ListItem>> original =
++                model.get(AppMenuItemWithSubmenuProperties.SUBMENU_PROVIDER);
++        model.set(
++                AppMenuItemWithSubmenuProperties.SUBMENU_PROVIDER,
++                () -> {
++                    List<ListItem> built = original.get();
++                    List<ListItem> kept = new ArrayList<>();
++                    for (ListItem child : built) {
++                        if (!shouldHide(child.model, hidden)) kept.add(child);
++                    }
++                    return kept;
++                });
++    }
++
++    private static boolean shouldHide(PropertyModel model, Set<String> hidden) {
++        if (!model.containsKey(AppMenuItemProperties.MENU_ITEM_ID)) return false;
++        int id = model.get(AppMenuItemProperties.MENU_ITEM_ID);
++        if (id == R.id.pomelo_customize_menu) return false;
++        return hidden.contains(Integer.toString(id));
++    }
++
++    private static void floatVideo(ChromeActivity activity) {
++        WebContents webContents = currentWebContents(activity);
++        if (webContents == null) {
++            toast(activity, "No page to float");
++            return;
++        }
++        runOnPage(
++                webContents,
++                "(function(){"
++                        + "var vids=[].slice.call(document.querySelectorAll('video'));"
++                        + "var v=vids.filter(function(x){return !x.paused && x.readyState>0;})[0]"
++                        + "||vids.filter(function(x){return x.readyState>0;})[0]||vids[0];"
++                        + "if(!v) return 'none';"
++                        + "if(document.pictureInPictureElement){document.exitPictureInPicture();return 'exit';}"
++                        + "var p=v.requestPictureInPicture();"
++                        + "if(p&&p.catch) p.catch(function(){});"
++                        + "return 'ok';"
++                        + "})()",
++                json -> {
++                    if ("\"none\"".equals(json)) toast(activity, "No video on this page");
++                });
++    }
++
++    private static void showMedia(ChromeActivity activity) {
++        WebContents webContents = currentWebContents(activity);
++        LinkedHashSet<String> urls = new LinkedHashSet<>();
++        if (activity.didFinishNativeInitialization()) {
++            addLines(urls, ContentUtils.getPomeloMediaUrls());
++        }
++        if (webContents == null) {
++            presentMedia(activity, urls);
++            return;
++        }
++        runOnPage(
++                webContents,
++                "(function(){var out=[];function add(u){if(u&&typeof u==='string'&&u.indexOf('http')===0)out.push(u);}"
++                        + "var nodes=document.querySelectorAll('video,audio,source');"
++                        + "for(var i=0;i<nodes.length;i++){add(nodes[i].currentSrc||nodes[i].src);}"
++                        + "var entries=performance.getEntriesByType('resource');"
++                        + "for(var j=0;j<entries.length;j++){var n=entries[j].name||'';"
++                        + "if(/\\.(mp4|m4v|webm|mkv|m3u8|mpd|mp3|m4a|aac|ogg|opus)(\\?|$)/i.test(n))add(n);}"
++                        + "return out;})()",
++                json -> {
++                    if (json != null) {
++                        try {
++                            JSONArray array = new JSONArray(json);
++                            for (int i = 0; i < array.length(); i++) {
++                                urls.add(array.getString(i));
++                            }
++                        } catch (JSONException ignored) {
++                        }
++                    }
++                    presentMedia(activity, urls);
++                });
++    }
++
++    private static void presentMedia(ChromeActivity activity, LinkedHashSet<String> urls) {
++        if (urls.isEmpty()) {
++            toast(activity, "No media spotted on this page yet");
++            return;
++        }
++        String[] items = urls.toArray(new String[0]);
++        new AlertDialog.Builder(activity)
++                .setTitle("Media on this page")
++                .setItems(items, (dialog, which) -> download(activity, items[which]))
++                .setNegativeButton(android.R.string.cancel, null)
++                .show();
++    }
++
++    private static void download(ChromeActivity activity, String url) {
++        try {
++            DownloadManager manager =
++                    (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
++            if (manager == null) {
++                toast(activity, "Download manager is unavailable");
++                return;
++            }
++            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
++            request.setNotificationVisibility(
++                    DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
++            String name = Uri.parse(url).getLastPathSegment();
++            if (name == null || name.isEmpty()) name = "media";
++            request.setTitle(name);
++            manager.enqueue(request);
++            toast(activity, "Download started");
++        } catch (RuntimeException e) {
++            toast(activity, "Could not download that address");
++        }
++    }
++
++    private static void showUserscripts(ChromeActivity activity) {
++        JSONArray scripts = readScripts();
++        String[] labels = new String[scripts.length() + 1];
++        labels[0] = "Add script";
++        for (int i = 0; i < scripts.length(); i++) {
++            JSONObject script = scripts.optJSONObject(i);
++            String name = script == null ? "script" : script.optString("name", "script");
++            boolean enabled = script != null && script.optBoolean("enabled", true);
++            labels[i + 1] = (enabled ? "" : "(off) ") + name;
++        }
++        new AlertDialog.Builder(activity)
++                .setTitle("Userscripts")
++                .setItems(
++                        labels,
++                        (dialog, which) -> {
++                            if (which == 0) {
++                                editScript(activity, scripts, -1);
++                            } else {
++                                editScript(activity, scripts, which - 1);
++                            }
++                        })
++                .setNegativeButton(android.R.string.cancel, null)
++                .show();
++    }
++
++    private static void editScript(ChromeActivity activity, JSONArray scripts, int index) {
++        JSONObject existing = index >= 0 ? scripts.optJSONObject(index) : null;
++        EditText name = new EditText(activity);
++        name.setHint("Name");
++        name.setSingleLine(true);
++        name.setText(existing == null ? "" : existing.optString("name", ""));
++        EditText code = new EditText(activity);
++        code.setHint("JavaScript. Runs on http(s) pages after load.");
++        code.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
++        code.setMinLines(6);
++        code.setText(existing == null ? "" : existing.optString("code", ""));
++        CheckBox enabled = new CheckBox(activity);
++        enabled.setText("Enabled");
++        enabled.setChecked(existing == null || existing.optBoolean("enabled", true));
++        LinearLayout layout = new LinearLayout(activity);
++        layout.setOrientation(LinearLayout.VERTICAL);
++        int pad = (int) (activity.getResources().getDisplayMetrics().density * 16);
++        layout.setPadding(pad, pad, pad, 0);
++        layout.addView(name);
++        layout.addView(enabled);
++        layout.addView(code);
++        AlertDialog.Builder builder =
++                new AlertDialog.Builder(activity).setTitle("Userscript").setView(layout);
++        builder.setPositiveButton(
++                android.R.string.ok,
++                (dialog, which) -> {
++                    JSONObject script = existing == null ? new JSONObject() : existing;
++                    try {
++                        script.put("name", name.getText().toString().trim());
++                        script.put("code", code.getText().toString());
++                        script.put("enabled", enabled.isChecked());
++                        if (index < 0) scripts.put(script);
++                    } catch (JSONException ignored) {
++                        return;
++                    }
++                    writeScripts(scripts);
++                });
++        if (index >= 0) {
++            builder.setNeutralButton(
++                    "Delete",
++                    (dialog, which) -> {
++                        scripts.remove(index);
++                        writeScripts(scripts);
++                    });
++        }
++        builder.setNegativeButton(android.R.string.cancel, null).show();
++    }
++
++    private static void showCustomizeMenu(ChromeActivity activity) {
++        // The ids below are the Pomelo entries plus common overflow actions. Checked means shown.
++        int[] ids =
++                new int[] {
++                    R.id.pomelo_float_video,
++                    R.id.pomelo_media,
++                    R.id.pomelo_ad_block,
++                    R.id.pomelo_volume_scroll,
++                    R.id.pomelo_userscripts,
++                    R.id.new_tab_menu_id,
++                    R.id.new_incognito_tab_menu_id,
++                    R.id.all_bookmarks_menu_id,
++                    R.id.recent_tabs_menu_id,
++                    R.id.downloads_menu_id,
++                    R.id.open_history_menu_id,
++                    R.id.share_menu_id,
++                    R.id.find_in_page_id,
++                    R.id.translate_id,
++                    R.id.reader_mode_prefs_id,
++                    R.id.preferences_id,
++                    R.id.dev_tools,
++                    R.id.dev_tools_inspect,
++                    R.id.extensions_menu_menu_id
++                };
++        String[] titles =
++                new String[] {
++                    "Float video",
++                    "Page media",
++                    adBlockTitle(),
++                    volumeTitle(),
++                    "Userscripts",
++                    "New tab",
++                    "New Incognito tab",
++                    "Bookmarks",
++                    "Recent tabs",
++                    "Downloads",
++                    "History",
++                    "Share",
++                    "Find in page",
++                    "Translate",
++                    "Reader mode",
++                    "Settings",
++                    "Developer tools",
++                    "Inspect",
++                    "Extensions"
++                };
++        Set<String> hidden = hiddenIds();
++        boolean[] checked = new boolean[ids.length];
++        for (int i = 0; i < ids.length; i++) {
++            checked[i] = !hidden.contains(Integer.toString(ids[i]));
++        }
++        new AlertDialog.Builder(activity)
++                .setTitle("Overflow menu")
++                .setMultiChoiceItems(
++                        titles,
++                        checked,
++                        (dialog, which, isChecked) -> checked[which] = isChecked)
++                .setPositiveButton(
++                        android.R.string.ok,
++                        (dialog, which) -> {
++                            Set<String> next = new HashSet<>();
++                            for (int i = 0; i < ids.length; i++) {
++                                if (!checked[i]) next.add(Integer.toString(ids[i]));
++                            }
++                            prefs().edit().putStringSet(KEY_HIDDEN, next).apply();
++                            toast(activity, "Menu updated");
++                        })
++                .setNegativeButton(android.R.string.cancel, null)
++                .show();
++    }
++
++    private static Set<String> hiddenIds() {
++        Set<String> stored = prefs().getStringSet(KEY_HIDDEN, null);
++        return stored == null ? new HashSet<>() : new HashSet<>(stored);
++    }
++
++    private static JSONArray readScripts() {
++        String raw = prefs().getString(KEY_SCRIPTS, "[]");
++        if (raw == null) raw = "[]";
++        try {
++            return new JSONArray(raw);
++        } catch (JSONException e) {
++            return new JSONArray();
++        }
++    }
++
++    private static void writeScripts(JSONArray scripts) {
++        prefs().edit().putString(KEY_SCRIPTS, scripts.toString()).apply();
++    }
++
++    private static String enabledUserscriptSource() {
++        JSONArray scripts = readScripts();
++        StringBuilder builder = new StringBuilder();
++        for (int i = 0; i < scripts.length(); i++) {
++            JSONObject script = scripts.optJSONObject(i);
++            if (script == null || !script.optBoolean("enabled", true)) continue;
++            String code = script.optString("code", "");
++            if (code.isEmpty()) continue;
++            builder.append("try{")
++                    .append(code)
++                    .append("\n}catch(e){}\n");
++        }
++        return builder.toString();
++    }
++
++    private static @Nullable WebContents currentWebContents(ChromeActivity activity) {
++        Tab tab = activity.getActivityTab();
++        return tab == null ? null : tab.getWebContents();
++    }
++
++    private static void runOnPage(
++            WebContents webContents, String script, @Nullable JavaScriptCallback callback) {
++        RenderFrameHost frame = webContents.getMainFrame();
++        if (frame == null || !frame.isRenderFrameLive()) return;
++        frame.executeJavaScriptInIsolatedWorld(script, ISOLATED_WORLD_MAIN, callback);
++    }
++
++    private static void addLines(Set<String> urls, @Nullable String blob) {
++        if (blob == null || blob.isEmpty()) return;
++        for (String line : blob.split("\n")) {
++            if (!line.isEmpty()) urls.add(line);
++        }
++    }
++
++    private static void toast(Context context, String message) {
++        Toast.makeText(context, message, Toast.LENGTH_SHORT).show();
++    }
++}
+diff --git aa/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java bb/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java
+index ca10f97fa4..0731aa918d 100644
+--- aa/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java
++++ bb/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java
+@@ -17,6 +17,7 @@ import org.chromium.chrome.browser.app.appmenu.AppMenuItemTheme;
+ import org.chromium.chrome.browser.app.appmenu.AppMenuItemUtils;
+ import org.chromium.chrome.browser.devtools.DevToolsWindowAndroid;
+ import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
++import org.chromium.chrome.browser.pomelo.PomeloTools;
+ import org.chromium.chrome.browser.profiles.Profile;
+ import org.chromium.chrome.browser.readaloud.ReadAloudController;
+ import org.chromium.chrome.browser.tab.Tab;
+@@ -30,6 +31,8 @@ import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
+ import org.chromium.ui.modelutil.PropertyModel;
+ import org.chromium.url.GURL;
+ 
++import java.util.ArrayList;
++import java.util.List;
+ import java.util.function.BooleanSupplier;
+ import java.util.function.Supplier;
+ 
+@@ -286,4 +289,24 @@ public class MoreToolsItemBuilder {
+                         mIsMenuIconAtStart),
+                 /* showIcon= */ false);
+     }
++
++    /** Pomelo entries for the overflow menu. Titles of the toggles follow the current pref. */
++    public List<ListItem> buildPomeloItems() {
++        List<ListItem> items = new ArrayList<>();
++        items.add(pomeloItem(R.id.pomelo_float_video, R.string.menu_pomelo_float_video));
++        items.add(pomeloItem(R.id.pomelo_media, R.string.menu_pomelo_media));
++        ListItem adBlock = pomeloItem(R.id.pomelo_ad_block, R.string.menu_pomelo_ad_block);
++        PomeloTools.retitle(adBlock, PomeloTools.adBlockTitle());
++        items.add(adBlock);
++        ListItem volume = pomeloItem(R.id.pomelo_volume_scroll, R.string.menu_pomelo_volume_scroll);
++        PomeloTools.retitle(volume, PomeloTools.volumeTitle());
++        items.add(volume);
++        items.add(pomeloItem(R.id.pomelo_userscripts, R.string.menu_pomelo_userscript));
++        items.add(pomeloItem(R.id.pomelo_customize_menu, R.string.menu_pomelo_customize_menu));
++        return items;
++    }
++
++    private ListItem pomeloItem(int id, int titleId) {
++        return PomeloTools.standardItem(mContext, mAppMenuItemTheme, id, titleId, mIsMenuIconAtStart);
++    }
+ }
+diff --git aa/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java bb/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java
+index 0b78516d49..71575a0cf3 100644
+--- aa/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java
++++ bb/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedAppMenuPropertiesDelegate.java
+@@ -57,6 +57,7 @@ import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
+ import org.chromium.chrome.browser.omaha.UpdateMenuItemHelper;
+ import org.chromium.chrome.browser.open_in_app.OpenInAppMenuItemProvider;
+ import org.chromium.chrome.browser.preferences.Pref;
++import org.chromium.chrome.browser.pomelo.PomeloTools;
+ import org.chromium.chrome.browser.profiles.Profile;
+ import org.chromium.chrome.browser.readaloud.ReadAloudController;
+ import org.chromium.chrome.browser.recent_tabs.ForeignSessionHelper;
+@@ -301,6 +302,7 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
+         } else if (menuGroup == MenuGroup.TABLET_EMPTY_MODE_MENU) {
+             populateTabletEmptyModeMenu(modelList);
+         }
++        PomeloTools.filterMenu(modelList);
+         return modelList;
+     }
+ 
+@@ -1243,6 +1245,7 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
+                         submenuItems.add(mMoreToolsItemBuilder.buildDevToolsItem());
+                         submenuItems.add(mMoreToolsItemBuilder.buildDevToolsInspectItem());
+                     }
++                    submenuItems.addAll(mMoreToolsItemBuilder.buildPomeloItems());
+ 
+                     if (!submenuItems.isEmpty()
+                             && submenuItems.get(submenuItems.size() - 1).type
+diff --git aa/chrome/browser/android/BUILD.gn bb/chrome/browser/android/BUILD.gn
+index 76b1a906cd..04ae258f3b 100644
+--- aa/chrome/browser/android/BUILD.gn
++++ bb/chrome/browser/android/BUILD.gn
+@@ -472,6 +472,8 @@ if (is_android) {
+       "compositor/tab_underline_manager.cc",
+       "compositor/tab_underline_manager.h",
+       "content/content_utils.cc",
++      "pomelo/pomelo_request_throttle.cc",
++      "pomelo/pomelo_request_throttle.h",
+       "content/web_contents_factory.cc",
+       "content/web_contents_factory_data_deleter.cc",
+       "content/web_contents_factory_data_deleter.h",
+diff --git aa/chrome/browser/android/content/content_utils.cc bb/chrome/browser/android/content/content_utils.cc
+index 142a60bf54..1843ba66c0 100644
+--- aa/chrome/browser/android/content/content_utils.cc
++++ bb/chrome/browser/android/content/content_utils.cc
+@@ -6,6 +6,7 @@
+ #include "base/android/jni_string.h"
+ #include "components/embedder_support/user_agent_utils.h"
+ #include "components/version_info/version_info.h"
++#include "chrome/browser/android/pomelo/pomelo_request_throttle.h"
+ #include "content/public/browser/web_contents.h"
+ #include "third_party/blink/public/common/features.h"
+ #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
+@@ -67,4 +68,16 @@ static void JNI_ContentUtils_SetUserAgentOverride(
+       ->SetUserAgentOverride(spoofed_ua, j_override_in_new_tabs);
+ }
+ 
++static void JNI_ContentUtils_SetPomeloAdBlockEnabled(JNIEnv* env, bool enabled) {
++  pomelo::SetAdBlockEnabled(enabled);
++}
++
++static bool JNI_ContentUtils_IsPomeloAdBlockEnabled(JNIEnv* env) {
++  return pomelo::IsAdBlockEnabled();
++}
++
++static std::string JNI_ContentUtils_GetPomeloMediaUrls(JNIEnv* env) {
++  return pomelo::GetMediaUrls();
++}
++
+ DEFINE_JNI(ContentUtils)
+diff --git aa/chrome/browser/android/content/java/src/org/chromium/chrome/browser/content/ContentUtils.java bb/chrome/browser/android/content/java/src/org/chromium/chrome/browser/content/ContentUtils.java
+index 8d8beeefa3..396705de1c 100644
+--- aa/chrome/browser/android/content/java/src/org/chromium/chrome/browser/content/ContentUtils.java
++++ bb/chrome/browser/android/content/java/src/org/chromium/chrome/browser/content/ContentUtils.java
+@@ -30,11 +30,32 @@ public class ContentUtils {
+         ContentUtilsJni.get().setUserAgentOverride(webContents, overrideInNewTabs);
+     }
+ 
++    /** Pomelo: the built-in host blocker reads this from the UI thread. */
++    public static void setPomeloAdBlockEnabled(boolean enabled) {
++        ContentUtilsJni.get().setPomeloAdBlockEnabled(enabled);
++    }
++
++    public static boolean isPomeloAdBlockEnabled() {
++        return ContentUtilsJni.get().isPomeloAdBlockEnabled();
++    }
++
++    /** Newline-separated media addresses the request throttle has seen. */
++    public static String getPomeloMediaUrls() {
++        return ContentUtilsJni.get().getPomeloMediaUrls();
++    }
++
+     @NativeMethods
+     interface Natives {
+         @JniType("std::string")
+         String getBrowserUserAgent();
+ 
+         void setUserAgentOverride(WebContents webContents, boolean overrideInNewTabs);
++
++        void setPomeloAdBlockEnabled(boolean enabled);
++
++        boolean isPomeloAdBlockEnabled();
++
++        @JniType("std::string")
++        String getPomeloMediaUrls();
+     }
+ }
+diff --git ab/chrome/browser/android/pomelo/pomelo_request_throttle.cc bb/chrome/browser/android/pomelo/pomelo_request_throttle.cc
+new file mode 100644
+index 0000000000..766cb26b1c
+--- /dev/null
++++ bb/chrome/browser/android/pomelo/pomelo_request_throttle.cc
+@@ -0,0 +1,203 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/android/pomelo/pomelo_request_throttle.h"
++
++#include <atomic>
++#include <deque>
++#include <string>
++#include <string_view>
++#include <utility>
++
++#include "base/no_destructor.h"
++#include "base/strings/string_util.h"
++#include "base/synchronization/lock.h"
++#include "net/base/net_errors.h"
++#include "services/network/public/cpp/resource_request.h"
++#include "services/network/public/mojom/url_response_head.mojom.h"
++#include "url/gurl.h"
++
++namespace pomelo {
++namespace {
++
++constexpr std::string_view kAdHosts[] = {
++    "doubleclick.net",
++    "googlesyndication.com",
++    "googleadservices.com",
++    "googletagservices.com",
++    "adnxs.com",
++    "adsrvr.org",
++    "rubiconproject.com",
++    "pubmatic.com",
++    "openx.net",
++    "criteo.com",
++    "criteo.net",
++    "taboola.com",
++    "outbrain.com",
++    "scorecardresearch.com",
++    "amazon-adsystem.com",
++    "moatads.com",
++    "adsafeprotected.com",
++    "serving-sys.com",
++    "2mdn.net",
++    "adform.net",
++    "smartadserver.com",
++    "media.net",
++    "casalemedia.com",
++    "sharethrough.com",
++    "yieldmo.com",
++    "bidswitch.net",
++    "contextweb.com",
++    "ads.yahoo.com",
++};
++
++constexpr size_t kMaxMediaUrls = 40;
++
++struct MediaLog {
++  base::Lock lock;
++  std::deque<std::string> urls;
++};
++
++MediaLog& media_log() {
++  static base::NoDestructor<MediaLog> log;
++  return *log;
++}
++
++std::atomic<bool>& adblock_enabled() {
++  static std::atomic<bool> enabled{true};
++  return enabled;
++}
++
++bool HostIsListed(std::string_view host) {
++  for (std::string_view suffix : kAdHosts) {
++    if (host == suffix) {
++      return true;
++    }
++    if (host.size() > suffix.size() &&
++        host[host.size() - suffix.size() - 1] == '.' &&
++        host.ends_with(suffix)) {
++      return true;
++    }
++  }
++  return false;
++}
++
++bool LooksLikeMedia(const GURL& url,
++                    network::mojom::RequestDestination destination,
++                    std::string_view mime) {
++  if (destination == network::mojom::RequestDestination::kVideo ||
++      destination == network::mojom::RequestDestination::kAudio) {
++    return true;
++  }
++  if (base::StartsWith(mime, "video/") || base::StartsWith(mime, "audio/") ||
++      mime == "application/vnd.apple.mpegurl" ||
++      mime == "application/x-mpegurl") {
++    return true;
++  }
++  std::string path = base::ToLowerASCII(url.path());
++  return path.ends_with(".mp4") || path.ends_with(".m4v") ||
++         path.ends_with(".webm") || path.ends_with(".mkv") ||
++         path.ends_with(".m3u8") || path.ends_with(".mpd") ||
++         path.ends_with(".mp3") || path.ends_with(".m4a") ||
++         path.ends_with(".aac") || path.ends_with(".ogg") ||
++         path.ends_with(".opus");
++}
++
++void RememberMedia(const GURL& url) {
++  if (!url.SchemeIsHTTPOrHTTPS()) {
++    return;
++  }
++  const std::string spec = url.spec();
++  MediaLog& log = media_log();
++  base::AutoLock guard(log.lock);
++  for (const std::string& existing : log.urls) {
++    if (existing == spec) {
++      return;
++    }
++  }
++  log.urls.push_back(spec);
++  while (log.urls.size() > kMaxMediaUrls) {
++    log.urls.pop_front();
++  }
++}
++
++class PomeloRequestThrottle : public blink::URLLoaderThrottle {
++ public:
++  PomeloRequestThrottle() = default;
++  PomeloRequestThrottle(const PomeloRequestThrottle&) = delete;
++  PomeloRequestThrottle& operator=(const PomeloRequestThrottle&) = delete;
++  ~PomeloRequestThrottle() override = default;
++
++  void WillStartRequest(network::ResourceRequest* request,
++                        bool* defer) override {
++    is_main_frame_ = request->is_outermost_main_frame;
++    Consider(request->url, request->destination, std::string_view());
++  }
++
++  void WillRedirectRequest(
++      net::RedirectInfo* redirect_info,
++      const network::mojom::URLResponseHead& response_head,
++      bool* defer,
++      network::HttpRequestHeadersUpdateParams* headers_update_params)
++      override {
++    Consider(redirect_info->new_url, network::mojom::RequestDestination::kEmpty,
++             response_head.mime_type);
++  }
++
++  void WillProcessResponse(const GURL& response_url,
++                           network::mojom::URLResponseHead* response_head,
++                           bool* defer) override {
++    Consider(response_url, network::mojom::RequestDestination::kEmpty,
++             response_head->mime_type);
++  }
++
++ private:
++  void Consider(const GURL& url,
++                network::mojom::RequestDestination destination,
++                std::string_view mime) {
++    if (LooksLikeMedia(url, destination, mime)) {
++      RememberMedia(url);
++    }
++    if (is_main_frame_ || !adblock_enabled().load()) {
++      return;
++    }
++    if (!url.SchemeIsHTTPOrHTTPS()) {
++      return;
++    }
++    if (HostIsListed(url.host()) && delegate_) {
++      delegate_->CancelWithError(net::ERR_BLOCKED_BY_CLIENT, "pomelo-adblock");
++    }
++  }
++
++  bool is_main_frame_ = false;
++};
++
++}  // namespace
++
++void SetAdBlockEnabled(bool enabled) {
++  adblock_enabled().store(enabled);
++}
++
++bool IsAdBlockEnabled() {
++  return adblock_enabled().load();
++}
++
++std::string GetMediaUrls() {
++  MediaLog& log = media_log();
++  base::AutoLock guard(log.lock);
++  std::string joined;
++  for (const std::string& url : log.urls) {
++    if (!joined.empty()) {
++      joined.push_back('\n');
++    }
++    joined.append(url);
++  }
++  return joined;
++}
++
++std::unique_ptr<blink::URLLoaderThrottle> CreateRequestThrottle() {
++  return std::make_unique<PomeloRequestThrottle>();
++}
++
++}  // namespace pomelo
+diff --git ab/chrome/browser/android/pomelo/pomelo_request_throttle.h bb/chrome/browser/android/pomelo/pomelo_request_throttle.h
+new file mode 100644
+index 0000000000..38b18012f1
+--- /dev/null
++++ bb/chrome/browser/android/pomelo/pomelo_request_throttle.h
+@@ -0,0 +1,27 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_ANDROID_POMELO_POMELO_REQUEST_THROTTLE_H_
++#define CHROME_BROWSER_ANDROID_POMELO_POMELO_REQUEST_THROTTLE_H_
++
++#include <memory>
++#include <string>
++
++#include "third_party/blink/public/common/loader/url_loader_throttle.h"
++
++namespace pomelo {
++
++// Pomelo phone tools. The host list and matcher below are original and
++// BSD-licensed with this file. They are not EasyList, AdGuard, or any GPL
++// filter engine.
++
++void SetAdBlockEnabled(bool enabled);
++bool IsAdBlockEnabled();
++std::string GetMediaUrls();
++
++std::unique_ptr<blink::URLLoaderThrottle> CreateRequestThrottle();
++
++}  // namespace pomelo
++
++#endif  // CHROME_BROWSER_ANDROID_POMELO_POMELO_REQUEST_THROTTLE_H_
+diff --git aa/chrome/browser/chrome_content_browser_client.cc bb/chrome/browser/chrome_content_browser_client.cc
+index 565bd580ba..10052210af 100644
+--- aa/chrome/browser/chrome_content_browser_client.cc
++++ bb/chrome/browser/chrome_content_browser_client.cc
+@@ -545,6 +545,7 @@
+ #include "base/android/application_status_listener.h"
+ #include "base/feature_list.h"
+ #include "chrome/browser/android/customtabs/client_data_header_web_contents_observer.h"  // nogncheck crbug.com/40147906
++#include "chrome/browser/android/pomelo/pomelo_request_throttle.h"  // nogncheck crbug.com/40147906
+ #include "chrome/browser/android/devtools_manager_delegate_android.h"  // nogncheck crbug.com/40147906
+ #include "chrome/browser/android/ntp/new_tab_page_url_handler.h"  // nogncheck crbug.com/40147906
+ #include "chrome/browser/android/service_tab_launcher.h"  // nogncheck crbug.com/40147906
+@@ -6343,6 +6344,10 @@ ChromeContentBrowserClient::CreateURLLoaderThrottles(
+     result.push_back(std::move(glic_throttle));
+   }
+ 
++#if BUILDFLAG(IS_ANDROID)
++  result.push_back(pomelo::CreateRequestThrottle());
++#endif
++
+   return result;
+ }
+ 
+diff --git aa/chrome/browser/ui/android/strings/android_chrome_strings.grd bb/chrome/browser/ui/android/strings/android_chrome_strings.grd
+index 0536ccc685..8ec0f120c2 100644
+--- aa/chrome/browser/ui/android/strings/android_chrome_strings.grd
++++ bb/chrome/browser/ui/android/strings/android_chrome_strings.grd
+@@ -4509,6 +4509,24 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
+       <message name="IDS_MENU_DEV_TOOLS_INSPECT" desc="Menu item to inspect the current page with developer tools. [CHAR_LIMIT=27]">
+         Inspect
+       </message>
++      <message name="IDS_MENU_POMELO_FLOAT_VIDEO" desc="Menu item that puts the current video in a floating window. [CHAR_LIMIT=27]">
++        Float video
++      </message>
++      <message name="IDS_MENU_POMELO_MEDIA" desc="Menu item that lists media addresses spotted on the page. [CHAR_LIMIT=27]">
++        Page media
++      </message>
++      <message name="IDS_MENU_POMELO_AD_BLOCK" desc="Menu item that toggles the built-in ad blocker. [CHAR_LIMIT=27]">
++        Ad blocker
++      </message>
++      <message name="IDS_MENU_POMELO_VOLUME_SCROLL" desc="Menu item that toggles volume-key scrolling. [CHAR_LIMIT=27]">
++        Volume keys
++      </message>
++      <message name="IDS_MENU_POMELO_USERSCRIPT" desc="Menu item that opens the userscript editor. [CHAR_LIMIT=27]">
++        Userscripts
++      </message>
++      <message name="IDS_MENU_POMELO_CUSTOMIZE_MENU" desc="Menu item that chooses which overflow entries stay visible. [CHAR_LIMIT=27]">
++        Customize menu
++      </message>
+       <message name="IDS_MENU_SETTINGS" desc="Menu item for opening browser settings. [CHAR_LIMIT=27]">
+         Settings
+       </message>
+diff --git aa/extensions/browser/user_script_manager.cc bb/extensions/browser/user_script_manager.cc
+index 29188e1cb8..85793ea3b0 100644
+--- aa/extensions/browser/user_script_manager.cc
++++ bb/extensions/browser/user_script_manager.cc
+@@ -249,11 +249,19 @@ EmbedderUserScriptLoader* UserScriptManager::CreateEmbedderUserScriptLoader(
+ bool UserScriptManager::IsUserScriptPrefEnabled(
+     const ExtensionId& extension_id) const {
+   bool user_scripts_pref_allowed = false;
+-  ExtensionPrefs::Get(browser_context_)
+-      ->ReadPrefAsBoolean(extension_id, kUserScriptsAllowedPref,
+-                          &user_scripts_pref_allowed);
+-
+-  return user_scripts_pref_allowed;
++  // Pomelo: a userscript manager that declares the userScripts permission is
++  // allowed until the user turns that pref off. Stock Chrome leaves the pref
++  // unset, which this read treats as false and blocks Tampermonkey-style
++  // scripts on Android.
++  if (ExtensionPrefs::Get(browser_context_)
++          ->ReadPrefAsBoolean(extension_id, kUserScriptsAllowedPref,
++                              &user_scripts_pref_allowed)) {
++    return user_scripts_pref_allowed;
++  }
++  const Extension* extension =
++      ExtensionRegistry::Get(browser_context_)
++          ->GetInstalledExtension(extension_id);
++  return extension && IsUserScriptsAPIPermissionAvailable(*extension);
+ }
+ 
+ 
