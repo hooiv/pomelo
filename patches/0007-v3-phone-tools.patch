@@ -1,0 +1,466 @@
+Pomelo v3 phone tools on top of the v2 series.
+
+Vertical tabs are eligible on phones and on by default until the user chooses
+otherwise. The task manager feature is enabled. The Android side panel, which
+hosts extension side panels, is enabled.
+
+More tools gains Notes (a local pad), Sessions (save and reopen the current
+tabs), and Sync server (a Chromium sync URL applied as --sync-url on the next
+start). Docked DevTools is not in this patch: the phone frontend still opens
+through DevToolsWindow::OpenDevToolsWindow.
+
+diff --git aa/chrome/browser/flags/android/chrome_feature_list.cc bb/chrome/browser/flags/android/chrome_feature_list.cc
+index fb19408..33977ab 100644
+--- aa/chrome/browser/flags/android/chrome_feature_list.cc
++++ bb/chrome/browser/flags/android/chrome_feature_list.cc
+@@ -729,7 +729,8 @@ BASE_FEATURE(kAndroidThemeResourceProvider, base::FEATURE_DISABLED_BY_DEFAULT);
+ BASE_FEATURE(kAndroidToolbarCaptureOnDesktop, base::FEATURE_DISABLED_BY_DEFAULT);
+ BASE_FEATURE(kAndroidToolbarScrollAblation, base::FEATURE_DISABLED_BY_DEFAULT);
+ BASE_FEATURE(kAndroidUserEducationFramework, base::FEATURE_DISABLED_BY_DEFAULT);
+-BASE_FEATURE(kAndroidVerticalTabs, base::FEATURE_DISABLED_BY_DEFAULT);
++// Pomelo: vertical tabs are available on phones, not only tablets.
++BASE_FEATURE(kAndroidVerticalTabs, base::FEATURE_ENABLED_BY_DEFAULT);
+ BASE_FEATURE(kAndroidXRUsesSurfaceControl, base::FEATURE_ENABLED_BY_DEFAULT);
+ BASE_FEATURE(kAndroidXrImmersivePlayer, base::FEATURE_DISABLED_BY_DEFAULT);
+ BASE_FEATURE(kAndroidZoomImmersive, base::FEATURE_DISABLED_BY_DEFAULT);
+@@ -851,7 +852,8 @@ BASE_FEATURE(kEdgeToEdgeMonitorConfigurations, base::FEATURE_ENABLED_BY_DEFAULT)
+ BASE_FEATURE(kEdgeToEdgeTablet, base::FEATURE_ENABLED_BY_DEFAULT);
+ BASE_FEATURE(kEdgeToEdgeTopInset, base::FEATURE_DISABLED_BY_DEFAULT);
+ BASE_FEATURE(kEdgeToEdgeUseBackupNavbarInsets, base::FEATURE_ENABLED_BY_DEFAULT);
+-BASE_FEATURE(kEnableAndroidSidePanel, base::FEATURE_DISABLED_BY_DEFAULT);
++// Pomelo: the Android side panel hosts extension side panels.
++BASE_FEATURE(kEnableAndroidSidePanel, base::FEATURE_ENABLED_BY_DEFAULT);
+ BASE_FEATURE(kEnableAndroidSidePanelDevFeature, base::FEATURE_DISABLED_BY_DEFAULT);
+ BASE_FEATURE(kEnableAndroidSidePanelLogs, base::FEATURE_DISABLED_BY_DEFAULT);
+ BASE_FEATURE(kEnableAndroidSidePanelManualResizing, base::FEATURE_DISABLED_BY_DEFAULT);
+diff --git aa/chrome/browser/flags/android/java/src/org/chromium/chrome/browser/flags/ChromeFeatureList.java bb/chrome/browser/flags/android/java/src/org/chromium/chrome/browser/flags/ChromeFeatureList.java
+index c3e1bca..272700b 100644
+--- aa/chrome/browser/flags/android/java/src/org/chromium/chrome/browser/flags/ChromeFeatureList.java
++++ bb/chrome/browser/flags/android/java/src/org/chromium/chrome/browser/flags/ChromeFeatureList.java
+@@ -2039,7 +2039,7 @@ public abstract class ChromeFeatureList {
+ 
+     public static final BooleanCachedFeatureParam sAndroidVerticalTabsEnableByDefault =
+             newBooleanCachedFeatureParam(
+-                    ANDROID_VERTICAL_TABS, "enable_by_default", /* defaultValue= */ false);
++                    ANDROID_VERTICAL_TABS, "enable_by_default", /* defaultValue= */ true);
+ 
+     public static final IntCachedFeatureParam sBackgroundThreadPoolFieldTrialConfig =
+             newIntCachedFeatureParam(BACKGROUND_THREAD_POOL_FIELD_TRIAL, "config", 4);
+diff --git aa/chrome/browser/ui/vertical_tabs/android/java/src/org/chromium/chrome/browser/ui/vertical_tabs/VerticalTabUtils.java bb/chrome/browser/ui/vertical_tabs/android/java/src/org/chromium/chrome/browser/ui/vertical_tabs/VerticalTabUtils.java
+index 12cd33b..f7e3024 100644
+--- aa/chrome/browser/ui/vertical_tabs/android/java/src/org/chromium/chrome/browser/ui/vertical_tabs/VerticalTabUtils.java
++++ bb/chrome/browser/ui/vertical_tabs/android/java/src/org/chromium/chrome/browser/ui/vertical_tabs/VerticalTabUtils.java
+@@ -179,9 +179,9 @@ public class VerticalTabUtils {
+         if (sIsVerticalTabsEligibleForTesting != null) {
+             return sIsVerticalTabsEligibleForTesting;
+         }
+-        return context != null
+-                && ChromeFeatureList.sAndroidVerticalTabs.isEnabled()
+-                && DeviceFormFactor.isNonMultiDisplayContextOnTablet(context);
++        // Pomelo: phones can use the vertical tab strip. The tablet form-factor
++        // gate is what hid it on handsets.
++        return context != null && ChromeFeatureList.sAndroidVerticalTabs.isEnabled();
+     }
+ 
+     /**
+diff --git aa/chrome/browser/task_manager/common/task_manager_features.cc bb/chrome/browser/task_manager/common/task_manager_features.cc
+index f0585b0..cccfcef 100644
+--- aa/chrome/browser/task_manager/common/task_manager_features.cc
++++ bb/chrome/browser/task_manager/common/task_manager_features.cc
+@@ -14,9 +14,8 @@ namespace features {
+ 
+ #if BUILDFLAG(IS_ANDROID)
+ // Enables the Task Manager on Clank.
+-BASE_FEATURE(kTaskManagerClank,
+-             base::FEATURE_DISABLED_BY_DEFAULT
+-);
++// Pomelo: the task manager is available on phones.
++BASE_FEATURE(kTaskManagerClank, base::FEATURE_ENABLED_BY_DEFAULT);
+ 
+ // Enables the Task Manager Toolbar (chips and search) on Android.
+ BASE_FEATURE(kTaskManagerToolbar, base::FEATURE_ENABLED_BY_DEFAULT);
+diff --git aa/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java bb/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java
+index 0731aa9..aa03e4d 100644
+--- aa/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java
++++ bb/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java
+@@ -302,6 +302,9 @@ public class MoreToolsItemBuilder {
+         PomeloTools.retitle(volume, PomeloTools.volumeTitle());
+         items.add(volume);
+         items.add(pomeloItem(R.id.pomelo_userscripts, R.string.menu_pomelo_userscript));
++        items.add(pomeloItem(R.id.pomelo_notes, R.string.menu_pomelo_notes));
++        items.add(pomeloItem(R.id.pomelo_sessions, R.string.menu_pomelo_sessions));
++        items.add(pomeloItem(R.id.pomelo_sync_server, R.string.menu_pomelo_sync_server));
+         items.add(pomeloItem(R.id.pomelo_customize_menu, R.string.menu_pomelo_customize_menu));
+         return items;
+     }
+diff --git aa/chrome/android/java/res/values/ids.xml bb/chrome/android/java/res/values/ids.xml
+index c730e72..b0c7ec3 100644
+--- aa/chrome/android/java/res/values/ids.xml
++++ bb/chrome/android/java/res/values/ids.xml
+@@ -55,6 +55,9 @@ found in the LICENSE file.
+     <item type="id" name="pomelo_customize_menu" />
+     <item type="id" name="pomelo_float_video" />
+     <item type="id" name="pomelo_media" />
++    <item type="id" name="pomelo_notes" />
++    <item type="id" name="pomelo_sessions" />
++    <item type="id" name="pomelo_sync_server" />
+     <item type="id" name="pomelo_userscripts" />
+     <item type="id" name="pomelo_volume_scroll" />
+     <item type="id" name="print_id" />
+diff --git aa/chrome/browser/ui/android/strings/android_chrome_strings.grd bb/chrome/browser/ui/android/strings/android_chrome_strings.grd
+index 8ec0f12..7f1a5ae 100644
+--- aa/chrome/browser/ui/android/strings/android_chrome_strings.grd
++++ bb/chrome/browser/ui/android/strings/android_chrome_strings.grd
+@@ -4527,6 +4527,15 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
+       <message name="IDS_MENU_POMELO_CUSTOMIZE_MENU" desc="Menu item that chooses which overflow entries stay visible. [CHAR_LIMIT=27]">
+         Customize menu
+       </message>
++      <message name="IDS_MENU_POMELO_NOTES" desc="Menu item that opens the local notes pad. [CHAR_LIMIT=27]">
++        Notes
++      </message>
++      <message name="IDS_MENU_POMELO_SESSIONS" desc="Menu item that saves and restores sets of tabs. [CHAR_LIMIT=27]">
++        Sessions
++      </message>
++      <message name="IDS_MENU_POMELO_SYNC_SERVER" desc="Menu item that sets a non-Google sync server. [CHAR_LIMIT=27]">
++        Sync server
++      </message>
+       <message name="IDS_MENU_SETTINGS" desc="Menu item for opening browser settings. [CHAR_LIMIT=27]">
+         Settings
+       </message>
+diff --git aa/chrome/android/chrome_java_sources.gni bb/chrome/android/chrome_java_sources.gni
+index 1552c0d..4711fd6 100644
+--- aa/chrome/android/chrome_java_sources.gni
++++ bb/chrome/android/chrome_java_sources.gni
+@@ -1014,6 +1014,7 @@ chrome_java_sources = [
+   "java/src/org/chromium/chrome/browser/photo_picker/DecoderServiceImpl.java",
+   "java/src/org/chromium/chrome/browser/policy/PolicyAuditor.java",
+   "java/src/org/chromium/chrome/browser/policy/PolicyAuditorBridge.java",
++  "java/src/org/chromium/chrome/browser/pomelo/PomeloDesk.java",
+   "java/src/org/chromium/chrome/browser/pomelo/PomeloTools.java",
+   "java/src/org/chromium/chrome/browser/privacy/settings/DoNotTrackSettings.java",
+   "java/src/org/chromium/chrome/browser/privacy/settings/IncognitoLockSettings.java",
+diff --git aa/chrome/browser/android/content/java/src/org/chromium/chrome/browser/content/ContentUtils.java bb/chrome/browser/android/content/java/src/org/chromium/chrome/browser/content/ContentUtils.java
+index 396705d..0fd634d 100644
+--- aa/chrome/browser/android/content/java/src/org/chromium/chrome/browser/content/ContentUtils.java
++++ bb/chrome/browser/android/content/java/src/org/chromium/chrome/browser/content/ContentUtils.java
+@@ -4,9 +4,11 @@
+ 
+ package org.chromium.chrome.browser.content;
+ 
++import org.jni_zero.CalledByNative;
+ import org.jni_zero.JniType;
+ import org.jni_zero.NativeMethods;
+ 
++import org.chromium.base.ContextUtils;
+ import org.chromium.build.annotations.NullMarked;
+ import org.chromium.content_public.browser.WebContents;
+ 
+@@ -44,6 +46,14 @@ public class ContentUtils {
+         return ContentUtilsJni.get().getPomeloMediaUrls();
+     }
+ 
++    /** Pomelo: custom sync server. Empty means the upstream default. */
++    @CalledByNative
++    @JniType("std::string")
++    public static String getPomeloSyncUrl() {
++        String url = ContextUtils.getAppSharedPreferences().getString("pomelo_sync_url", "");
++        return url == null ? "" : url;
++    }
++
+     @NativeMethods
+     interface Natives {
+         @JniType("std::string")
+diff --git aa/chrome/browser/chrome_browser_main_android.cc bb/chrome/browser/chrome_browser_main_android.cc
+index 77dc601..dc8405e 100644
+--- aa/chrome/browser/chrome_browser_main_android.cc
++++ bb/chrome/browser/chrome_browser_main_android.cc
+@@ -17,6 +17,7 @@
+ #include "base/task/thread_pool.h"
+ #include "base/trace_event/trace_event.h"
+ #include "chrome/browser/android/metrics/android_atoms_logger.h"
++#include "chrome/browser/android/pomelo/pomelo_request_throttle.h"  // nogncheck
+ #include "chrome/browser/android/mojo/chrome_interface_registrar_android.h"
+ #include "chrome/browser/android/preferences/clipboard_android.h"
+ #include "chrome/browser/android/seccomp_support_detector.h"
+@@ -97,6 +98,7 @@ void ChromeBrowserMainPartsAndroid::PostProfileInit(Profile* profile,
+ int ChromeBrowserMainPartsAndroid::PreEarlyInitialization() {
+   TRACE_EVENT0("startup",
+                "ChromeBrowserMainPartsAndroid::PreEarlyInitialization");
++  pomelo::ApplySyncUrlSwitch();
+   content::Compositor::Initialize();
+ 
+   CHECK(base::CurrentThread::IsSet());
+diff --git aa/chrome/browser/android/pomelo/pomelo_request_throttle.h bb/chrome/browser/android/pomelo/pomelo_request_throttle.h
+index 38b1801..0aad02e 100644
+--- aa/chrome/browser/android/pomelo/pomelo_request_throttle.h
++++ bb/chrome/browser/android/pomelo/pomelo_request_throttle.h
+@@ -20,6 +20,10 @@ void SetAdBlockEnabled(bool enabled);
+ bool IsAdBlockEnabled();
+ std::string GetMediaUrls();
+ 
++// If the user saved a non-Google sync server, append --sync-url before the
++// sync service reads the command line. An explicit --sync-url still wins.
++void ApplySyncUrlSwitch();
++
+ std::unique_ptr<blink::URLLoaderThrottle> CreateRequestThrottle();
+ 
+ }  // namespace pomelo
+diff --git aa/chrome/browser/android/pomelo/pomelo_request_throttle.cc bb/chrome/browser/android/pomelo/pomelo_request_throttle.cc
+index 766cb26..286830f 100644
+--- aa/chrome/browser/android/pomelo/pomelo_request_throttle.cc
++++ bb/chrome/browser/android/pomelo/pomelo_request_throttle.cc
+@@ -10,7 +10,12 @@
+ #include <string_view>
+ #include <utility>
+ 
++#include "base/android/jni_android.h"
++#include "base/command_line.h"
++#include "base/android/jni_string.h"
+ #include "base/no_destructor.h"
++// jni_string.h specializes FromJniType<std::string> and must precede this.
++#include "chrome/browser/android/content/jni_headers/ContentUtils_jni.h"
+ #include "base/strings/string_util.h"
+ #include "base/synchronization/lock.h"
+ #include "net/base/net_errors.h"
+@@ -200,4 +205,16 @@ std::unique_ptr<blink::URLLoaderThrottle> CreateRequestThrottle() {
+   return std::make_unique<PomeloRequestThrottle>();
+ }
+ 
++void ApplySyncUrlSwitch() {
++  JNIEnv* env = base::android::AttachCurrentThread();
++  std::string url = Java_ContentUtils_getPomeloSyncUrl(env);
++  if (url.empty()) {
++    return;
++  }
++  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
++  if (!command_line->HasSwitch("sync-url")) {
++    command_line->AppendSwitchASCII("sync-url", url);
++  }
++}
++
+ }  // namespace pomelo
+diff --git aa/chrome/android/java/src/org/chromium/chrome/browser/pomelo/PomeloTools.java bb/chrome/android/java/src/org/chromium/chrome/browser/pomelo/PomeloTools.java
+index d077fa9..f0d733b 100644
+--- aa/chrome/android/java/src/org/chromium/chrome/browser/pomelo/PomeloTools.java
++++ bb/chrome/android/java/src/org/chromium/chrome/browser/pomelo/PomeloTools.java
+@@ -92,6 +92,7 @@ public class PomeloTools {
+     }
+ 
+     public static boolean handleMenuAction(ChromeActivity activity, int id) {
++        if (PomeloDesk.handleMenuAction(activity, id)) return true;
+         if (id == R.id.pomelo_float_video) {
+             floatVideo(activity);
+             return true;
+diff --git ab/chrome/android/java/src/org/chromium/chrome/browser/pomelo/PomeloDesk.java bb/chrome/android/java/src/org/chromium/chrome/browser/pomelo/PomeloDesk.java
+new file mode 100644
+index 0000000..d63b09e
+--- /dev/null
++++ bb/chrome/android/java/src/org/chromium/chrome/browser/pomelo/PomeloDesk.java
+@@ -0,0 +1,207 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++package org.chromium.chrome.browser.pomelo;
++
++import android.content.SharedPreferences;
++import android.text.InputType;
++import android.widget.EditText;
++import android.widget.LinearLayout;
++import android.widget.Toast;
++
++import androidx.appcompat.app.AlertDialog;
++
++import org.chromium.base.ContextUtils;
++import org.chromium.build.annotations.NullMarked;
++import org.chromium.chrome.R;
++import org.chromium.chrome.browser.app.ChromeActivity;
++import org.chromium.chrome.browser.tab.Tab;
++import org.chromium.chrome.browser.tab.TabLaunchType;
++import org.chromium.chrome.browser.tabmodel.TabCreator;
++import org.chromium.chrome.browser.tabmodel.TabModel;
++import org.chromium.content_public.browser.LoadUrlParams;
++import org.chromium.ui.base.PageTransition;
++import org.json.JSONArray;
++import org.json.JSONException;
++import org.json.JSONObject;
++
++/** Notes, named tab sessions, and a custom sync server URL. */
++@NullMarked
++public class PomeloDesk {
++    private static final String KEY_NOTES = "pomelo_notes";
++    private static final String KEY_SESSIONS = "pomelo_sessions";
++    static final String KEY_SYNC_URL = "pomelo_sync_url";
++
++    private PomeloDesk() {}
++
++    private static SharedPreferences prefs() {
++        return ContextUtils.getAppSharedPreferences();
++    }
++
++    public static boolean handleMenuAction(ChromeActivity activity, int id) {
++        if (id == R.id.pomelo_notes) {
++            showNotes(activity);
++            return true;
++        }
++        if (id == R.id.pomelo_sessions) {
++            showSessions(activity);
++            return true;
++        }
++        if (id == R.id.pomelo_sync_server) {
++            showSyncServer(activity);
++            return true;
++        }
++        return false;
++    }
++
++    private static void showNotes(ChromeActivity activity) {
++        EditText text = new EditText(activity);
++        text.setMinLines(8);
++        text.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
++        String saved = prefs().getString(KEY_NOTES, "");
++        text.setText(saved == null ? "" : saved);
++        new AlertDialog.Builder(activity)
++                .setTitle("Notes")
++                .setView(text)
++                .setPositiveButton(
++                        android.R.string.ok,
++                        (dialog, which) ->
++                                prefs().edit().putString(KEY_NOTES, text.getText().toString()).apply())
++                .setNegativeButton(android.R.string.cancel, null)
++                .show();
++    }
++
++    private static void showSessions(ChromeActivity activity) {
++        JSONArray sessions = readSessions();
++        String[] labels = new String[sessions.length() + 1];
++        labels[0] = "Save open tabs";
++        for (int i = 0; i < sessions.length(); i++) {
++            JSONObject session = sessions.optJSONObject(i);
++            labels[i + 1] = session == null ? "session" : session.optString("name", "session");
++        }
++        new AlertDialog.Builder(activity)
++                .setTitle("Sessions")
++                .setItems(
++                        labels,
++                        (dialog, which) -> {
++                            if (which == 0) {
++                                saveSession(activity, sessions);
++                            } else {
++                                restoreOrDelete(activity, sessions, which - 1);
++                            }
++                        })
++                .setNegativeButton(android.R.string.cancel, null)
++                .show();
++    }
++
++    private static void saveSession(ChromeActivity activity, JSONArray sessions) {
++        TabModel model = activity.getCurrentTabModel();
++        JSONArray urls = new JSONArray();
++        for (int i = 0; i < model.getCount(); i++) {
++            Tab tab = model.getTabAt(i);
++            if (tab == null) continue;
++            String spec = tab.getUrl().getSpec();
++            if (!spec.isEmpty()) urls.put(spec);
++        }
++        if (urls.length() == 0) {
++            toast(activity, "No tabs to save");
++            return;
++        }
++        EditText name = new EditText(activity);
++        name.setHint("Session name");
++        name.setSingleLine(true);
++        new AlertDialog.Builder(activity)
++                .setTitle("Save session")
++                .setView(name)
++                .setPositiveButton(
++                        android.R.string.ok,
++                        (dialog, which) -> {
++                            JSONObject session = new JSONObject();
++                            try {
++                                String title = name.getText().toString().trim();
++                                session.put("name", title.isEmpty() ? "Session" : title);
++                                session.put("urls", urls);
++                                sessions.put(session);
++                            } catch (JSONException ignored) {
++                                return;
++                            }
++                            writeSessions(sessions);
++                            toast(activity, "Session saved");
++                        })
++                .setNegativeButton(android.R.string.cancel, null)
++                .show();
++    }
++
++    private static void restoreOrDelete(ChromeActivity activity, JSONArray sessions, int index) {
++        JSONObject session = sessions.optJSONObject(index);
++        if (session == null) return;
++        new AlertDialog.Builder(activity)
++                .setTitle(session.optString("name", "Session"))
++                .setPositiveButton(
++                        "Open",
++                        (dialog, which) -> {
++                            JSONArray urls = session.optJSONArray("urls");
++                            if (urls == null) return;
++                            TabCreator creator =
++                                    activity.getTabCreator(activity.getCurrentTabModel().isIncognito());
++                            for (int i = 0; i < urls.length(); i++) {
++                                String url = urls.optString(i, "");
++                                if (url.isEmpty()) continue;
++                                creator.createNewTab(
++                                        new LoadUrlParams(url, PageTransition.AUTO_TOPLEVEL),
++                                        TabLaunchType.FROM_CHROME_UI,
++                                        /* parent= */ null);
++                            }
++                        })
++                .setNeutralButton(
++                        "Delete",
++                        (dialog, which) -> {
++                            sessions.remove(index);
++                            writeSessions(sessions);
++                        })
++                .setNegativeButton(android.R.string.cancel, null)
++                .show();
++    }
++
++    private static void showSyncServer(ChromeActivity activity) {
++        EditText url = new EditText(activity);
++        url.setHint("https://example.com/chromiumsync");
++        url.setSingleLine(true);
++        String saved = prefs().getString(KEY_SYNC_URL, "");
++        url.setText(saved == null ? "" : saved);
++        new AlertDialog.Builder(activity)
++                .setTitle("Sync server")
++                .setMessage(
++                        "Optional Chromium sync server. Leave empty to keep the default. Takes"
++                                + " effect on the next start. This does not sign you in; it only"
++                                + " changes where an already signed-in profile syncs.")
++                .setView(url)
++                .setPositiveButton(
++                        android.R.string.ok,
++                        (dialog, which) ->
++                                prefs().edit()
++                                        .putString(KEY_SYNC_URL, url.getText().toString().trim())
++                                        .apply())
++                .setNegativeButton(android.R.string.cancel, null)
++                .show();
++    }
++
++    private static JSONArray readSessions() {
++        String raw = prefs().getString(KEY_SESSIONS, "[]");
++        if (raw == null) raw = "[]";
++        try {
++            return new JSONArray(raw);
++        } catch (JSONException e) {
++            return new JSONArray();
++        }
++    }
++
++    private static void writeSessions(JSONArray sessions) {
++        prefs().edit().putString(KEY_SESSIONS, sessions.toString()).apply();
++    }
++
++    private static void toast(ChromeActivity activity, String message) {
++        Toast.makeText(activity, message, Toast.LENGTH_SHORT).show();
++    }
++}
