@@ -632,7 +632,28 @@ index 286830f..96afc92 100644
  constexpr size_t kMaxMediaUrls = 40;
  
  struct MediaLog {
-@@ -168,7 +273,9 @@ class PomeloRequestThrottle : public blink::URLLoaderThrottle {
+@@ -72,20 +177,6 @@
+ std::atomic<bool>& adblock_enabled() {
+   static std::atomic<bool> enabled{true};
+   return enabled;
+ }
+ 
+-bool HostIsListed(std::string_view host) {
+-  for (std::string_view suffix : kAdHosts) {
+-    if (host == suffix) {
+-      return true;
+-    }
+-    if (host.size() > suffix.size() &&
+-        host[host.size() - suffix.size() - 1] == '.' &&
+-        host.ends_with(suffix)) {
+-      return true;
+-    }
+-  }
+-  return false;
+-}
+-
+ bool LooksLikeMedia(const GURL& url,
+@@ -168,7 +259,9 @@ class PomeloRequestThrottle : public blink::URLLoaderThrottle {
      if (!url.SchemeIsHTTPOrHTTPS()) {
        return;
      }
@@ -643,7 +664,7 @@ index 286830f..96afc92 100644
        delegate_->CancelWithError(net::ERR_BLOCKED_BY_CLIENT, "pomelo-adblock");
      }
    }
-@@ -210,6 +317,14 @@ void ApplySyncUrlSwitch() {
+@@ -210,6 +303,14 @@ void ApplySyncUrlSwitch() {
      return;
    }
    base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
