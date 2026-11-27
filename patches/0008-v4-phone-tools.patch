@@ -1,0 +1,781 @@
+Pomelo v4 on top of the v3 series.
+
+DevTools on Android is allowed to dock, and opening it stores a bottom dock.
+Sync accepts "local" for Chromium's on-device backend, which does not need a
+Google account, or a custom server URL.
+
+The ad blocker parses ABP/uBlock network filters (||host^, @@ exceptions, and
+comments). A starter list ships in the patch. Extra rules pasted in Filter
+lists, including rules copied from EasyList, are parsed the same way. EasyList
+and uBlock Origin are not bundled.
+
+More tools toggles the desktop site for the current host, reader text size,
+translate, print/save as PDF, force zoom, a custom user agent, back and
+forward, grouping this tab with a neighbor, and an Incognito PIN.
+
+diff --git aa/chrome/android/chrome_java_sources.gni bb/chrome/android/chrome_java_sources.gni
+index 4711fd6..5242c4b 100644
+--- aa/chrome/android/chrome_java_sources.gni
++++ bb/chrome/android/chrome_java_sources.gni
+@@ -1015,6 +1015,7 @@ chrome_java_sources = [
+   "java/src/org/chromium/chrome/browser/policy/PolicyAuditor.java",
+   "java/src/org/chromium/chrome/browser/policy/PolicyAuditorBridge.java",
+   "java/src/org/chromium/chrome/browser/pomelo/PomeloDesk.java",
++  "java/src/org/chromium/chrome/browser/pomelo/PomeloMore.java",
+   "java/src/org/chromium/chrome/browser/pomelo/PomeloTools.java",
+   "java/src/org/chromium/chrome/browser/privacy/settings/DoNotTrackSettings.java",
+   "java/src/org/chromium/chrome/browser/privacy/settings/IncognitoLockSettings.java",
+diff --git aa/chrome/android/java/res/values/ids.xml bb/chrome/android/java/res/values/ids.xml
+index b0c7ec3..c672230 100644
+--- aa/chrome/android/java/res/values/ids.xml
++++ bb/chrome/android/java/res/values/ids.xml
+@@ -53,11 +53,22 @@ found in the LICENSE file.
+     <item type="id" name="open_tab_strip_context_menu" />
+     <item type="id" name="pomelo_ad_block" />
+     <item type="id" name="pomelo_customize_menu" />
++    <item type="id" name="pomelo_desktop_site" />
++    <item type="id" name="pomelo_filters" />
+     <item type="id" name="pomelo_float_video" />
++    <item type="id" name="pomelo_force_zoom" />
++    <item type="id" name="pomelo_incognito_lock" />
+     <item type="id" name="pomelo_media" />
++    <item type="id" name="pomelo_navigate_back" />
++    <item type="id" name="pomelo_navigate_forward" />
+     <item type="id" name="pomelo_notes" />
++    <item type="id" name="pomelo_reader" />
++    <item type="id" name="pomelo_save_pdf" />
+     <item type="id" name="pomelo_sessions" />
+     <item type="id" name="pomelo_sync_server" />
++    <item type="id" name="pomelo_tab_group" />
++    <item type="id" name="pomelo_translate" />
++    <item type="id" name="pomelo_user_agent" />
+     <item type="id" name="pomelo_userscripts" />
+     <item type="id" name="pomelo_volume_scroll" />
+     <item type="id" name="print_id" />
+diff --git aa/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java bb/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
+index 6cfa0ba..336dbb3 100644
+--- aa/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
++++ bb/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
+@@ -4510,6 +4510,9 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
+ 
+             mLocaleManager.showSearchEnginePromoIfNeeded(this, null);
+         } else if (id == R.id.new_incognito_tab_menu_id) {
++            if (org.chromium.chrome.browser.pomelo.PomeloMore.guardIncognito(this)) {
++                return true;
++            }
+             if (!mTabModelSelector.isTabStateInitialized()) {
+                 RecordUserAction.record("MobileMenuNewIncognitoTab.BeforeTabRestore");
+             }
+diff --git aa/chrome/android/java/src/org/chromium/chrome/browser/pomelo/PomeloDesk.java bb/chrome/android/java/src/org/chromium/chrome/browser/pomelo/PomeloDesk.java
+index d63b09e..8804223 100644
+--- aa/chrome/android/java/src/org/chromium/chrome/browser/pomelo/PomeloDesk.java
++++ bb/chrome/android/java/src/org/chromium/chrome/browser/pomelo/PomeloDesk.java
+@@ -173,9 +173,9 @@ public class PomeloDesk {
+         new AlertDialog.Builder(activity)
+                 .setTitle("Sync server")
+                 .setMessage(
+-                        "Optional Chromium sync server. Leave empty to keep the default. Takes"
+-                                + " effect on the next start. This does not sign you in; it only"
+-                                + " changes where an already signed-in profile syncs.")
++                        "Empty keeps the default. \"This device\" uses Chromium's local sync"
++                                + " backend and does not need a Google account. Any other value is"
++                                + " a sync server URL. Takes effect on the next start.")
+                 .setView(url)
+                 .setPositiveButton(
+                         android.R.string.ok,
+@@ -183,6 +183,9 @@ public class PomeloDesk {
+                                 prefs().edit()
+                                         .putString(KEY_SYNC_URL, url.getText().toString().trim())
+                                         .apply())
++                .setNeutralButton(
++                        "This device",
++                        (dialog, which) -> prefs().edit().putString(KEY_SYNC_URL, "local").apply())
+                 .setNegativeButton(android.R.string.cancel, null)
+                 .show();
+     }
+diff --git ab/chrome/android/java/src/org/chromium/chrome/browser/pomelo/PomeloMore.java bb/chrome/android/java/src/org/chromium/chrome/browser/pomelo/PomeloMore.java
+new file mode 100644
+index 0000000..5403422
+--- /dev/null
++++ bb/chrome/android/java/src/org/chromium/chrome/browser/pomelo/PomeloMore.java
+@@ -0,0 +1,239 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++package org.chromium.chrome.browser.pomelo;
++
++import android.content.SharedPreferences;
++import android.text.InputType;
++import android.widget.EditText;
++import android.widget.Toast;
++
++import androidx.appcompat.app.AlertDialog;
++
++import org.chromium.base.ContextUtils;
++import org.chromium.build.annotations.NullMarked;
++import org.chromium.build.annotations.Nullable;
++import org.chromium.chrome.R;
++import org.chromium.chrome.browser.app.ChromeActivity;
++import org.chromium.chrome.browser.content.ContentUtils;
++import org.chromium.chrome.browser.desktop_site.DesktopSiteUtils;
++import org.chromium.chrome.browser.dom_distiller.DomDistillerServiceFactory;
++import org.chromium.chrome.browser.dom_distiller.ReaderModeManager;
++import org.chromium.chrome.browser.preferences.Pref;
++import org.chromium.chrome.browser.printing.PrintHelper;
++import org.chromium.chrome.browser.profiles.Profile;
++import org.chromium.chrome.browser.tab.Tab;
++import org.chromium.chrome.browser.tabmodel.TabCreatorUtil;
++import org.chromium.chrome.browser.tabmodel.TabModel;
++import org.chromium.chrome.browser.translate.TranslateBridge;
++import org.chromium.components.dom_distiller.core.DistilledPagePrefs;
++import org.chromium.components.user_prefs.UserPrefs;
++import org.chromium.content_public.browser.WebContents;
++import org.chromium.url.GURL;
++
++/** Extra phone tools that use APIs already in this Chromium tree. */
++@NullMarked
++public class PomeloMore {
++    private static final String KEY_PIN = "pomelo_incognito_pin";
++    private static final String KEY_UA = "pomelo_user_agent";
++    static final String KEY_FILTERS = "pomelo_filter_rules";
++    private static boolean sIncognitoUnlocked;
++
++    private PomeloMore() {}
++
++    private static SharedPreferences prefs() {
++        return ContextUtils.getAppSharedPreferences();
++    }
++
++    public static boolean handleMenuAction(ChromeActivity activity, int id) {
++        Tab tab = activity.getActivityTab();
++        if (id == R.id.pomelo_desktop_site) {
++            toggleDesktopSite(activity, tab);
++            return true;
++        }
++        if (id == R.id.pomelo_reader) {
++            tweakReader(activity, tab);
++            return true;
++        }
++        if (id == R.id.pomelo_translate) {
++            if (tab != null) TranslateBridge.translateTabWhenReady(tab);
++            return true;
++        }
++        if (id == R.id.pomelo_save_pdf) {
++            if (!PrintHelper.printTab(tab)) toast(activity, "Can't print this page");
++            return true;
++        }
++        if (id == R.id.pomelo_force_zoom) {
++            toggleForceZoom(activity, tab);
++            return true;
++        }
++        if (id == R.id.pomelo_user_agent) {
++            editUserAgent(activity, tab);
++            return true;
++        }
++        if (id == R.id.pomelo_navigate_back) {
++            if (tab != null && tab.canGoBack()) tab.goBack();
++            return true;
++        }
++        if (id == R.id.pomelo_navigate_forward) {
++            if (tab != null && tab.canGoForward()) tab.goForward();
++            return true;
++        }
++        if (id == R.id.pomelo_tab_group) {
++            groupWithNeighbor(activity);
++            return true;
++        }
++        if (id == R.id.pomelo_incognito_lock) {
++            editIncognitoPin(activity);
++            return true;
++        }
++        if (id == R.id.pomelo_filters) {
++            editFilters(activity);
++            return true;
++        }
++        return false;
++    }
++
++    /** @return true when opening Incognito should wait for the PIN dialog. */
++    public static boolean guardIncognito(ChromeActivity activity) {
++        String pin = prefs().getString(KEY_PIN, "");
++        if (pin == null || pin.isEmpty() || sIncognitoUnlocked) return false;
++        EditText input = new EditText(activity);
++        input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
++        new AlertDialog.Builder(activity)
++                .setTitle("Incognito lock")
++                .setView(input)
++                .setPositiveButton(
++                        android.R.string.ok,
++                        (dialog, which) -> {
++                            if (pin.equals(input.getText().toString())) {
++                                sIncognitoUnlocked = true;
++                                TabCreatorUtil.launchNtp(activity.getTabCreator(true));
++                            } else {
++                                toast(activity, "Wrong PIN");
++                            }
++                        })
++                .setNegativeButton(android.R.string.cancel, null)
++                .show();
++        return true;
++    }
++
++    public static void applyCustomUserAgent(@Nullable Tab tab) {
++        if (tab == null) return;
++        WebContents webContents = tab.getWebContents();
++        if (webContents == null) return;
++        String ua = prefs().getString(KEY_UA, "");
++        ContentUtils.setPomeloCustomUserAgent(webContents, ua == null ? "" : ua);
++    }
++
++    private static void toggleDesktopSite(ChromeActivity activity, @Nullable Tab tab) {
++        if (tab == null) return;
++        Profile profile = tab.getProfile();
++        GURL url = tab.getUrl();
++        boolean next = !prefs().getBoolean("pomelo_desktop_" + url.getHost(), false);
++        DesktopSiteUtils.setRequestDesktopSiteContentSettingsForUrl(profile, url, next);
++        prefs().edit().putBoolean("pomelo_desktop_" + url.getHost(), next).apply();
++        tab.reload();
++        toast(activity, next ? "Desktop site for this host" : "Mobile site for this host");
++    }
++
++    private static void tweakReader(ChromeActivity activity, @Nullable Tab tab) {
++        if (tab == null) return;
++        DistilledPagePrefs prefs =
++                DomDistillerServiceFactory.getForProfile(tab.getProfile()).getDistilledPagePrefs();
++        float next = prefs.getFontScaling() < 1.3f ? 1.45f : 1.0f;
++        prefs.setFontScaling(next);
++        ReaderModeManager manager =
++                tab.getUserDataHost().getUserData(ReaderModeManager.class);
++        if (manager != null) {
++            manager.activateReaderMode(ReaderModeManager.EntryPoint.APP_MENU);
++        }
++        toast(activity, next > 1.2f ? "Reader text larger" : "Reader text normal");
++    }
++
++    private static void toggleForceZoom(ChromeActivity activity, @Nullable Tab tab) {
++        if (tab == null) return;
++        var service = UserPrefs.get(tab.getProfile());
++        boolean next = !service.getBoolean(Pref.ACCESSIBILITY_FORCE_ENABLE_ZOOM);
++        service.setBoolean(Pref.ACCESSIBILITY_FORCE_ENABLE_ZOOM, next);
++        toast(activity, next ? "Force zoom on" : "Force zoom off");
++    }
++
++    private static void editUserAgent(ChromeActivity activity, @Nullable Tab tab) {
++        EditText input = new EditText(activity);
++        input.setSingleLine(true);
++        input.setHint("Empty uses the normal Pomelo agent");
++        String saved = prefs().getString(KEY_UA, "");
++        input.setText(saved == null ? "" : saved);
++        new AlertDialog.Builder(activity)
++                .setTitle("User agent")
++                .setView(input)
++                .setPositiveButton(
++                        android.R.string.ok,
++                        (dialog, which) -> {
++                            prefs().edit().putString(KEY_UA, input.getText().toString().trim()).apply();
++                            applyCustomUserAgent(tab);
++                        })
++                .setNegativeButton(android.R.string.cancel, null)
++                .show();
++    }
++
++    private static void groupWithNeighbor(ChromeActivity activity) {
++        TabModel model = activity.getCurrentTabModel();
++        int index = model.index();
++        if (index < 0 || model.getCount() < 2) {
++            toast(activity, "Need two tabs to make a group");
++            return;
++        }
++        Tab current = model.getTabAt(index);
++        int otherIndex = index + 1 < model.getCount() ? index + 1 : index - 1;
++        Tab other = model.getTabAt(otherIndex);
++        if (current == null || other == null) return;
++        model.mergeTabsToGroup(other.getId(), current.getId());
++        toast(activity, "Tabs grouped");
++    }
++
++    private static void editIncognitoPin(ChromeActivity activity) {
++        EditText input = new EditText(activity);
++        input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
++        input.setHint("Empty removes the lock");
++        new AlertDialog.Builder(activity)
++                .setTitle("Incognito PIN")
++                .setView(input)
++                .setPositiveButton(
++                        android.R.string.ok,
++                        (dialog, which) -> {
++                            prefs().edit().putString(KEY_PIN, input.getText().toString().trim()).apply();
++                            sIncognitoUnlocked = false;
++                        })
++                .setNegativeButton(android.R.string.cancel, null)
++                .show();
++    }
++
++    private static void editFilters(ChromeActivity activity) {
++        EditText input = new EditText(activity);
++        input.setMinLines(8);
++        input.setHint("||ads.example^ or @@||ads.example^");
++        String saved = prefs().getString(KEY_FILTERS, "");
++        input.setText(saved == null ? "" : saved);
++        new AlertDialog.Builder(activity)
++                .setTitle("Filter lists")
++                .setMessage(
++                        "Extra network filters in EasyList / uBlock syntax. The built-in starter"
++                                + " list stays. EasyList itself is not bundled.")
++                .setView(input)
++                .setPositiveButton(
++                        android.R.string.ok,
++                        (dialog, which) ->
++                                prefs().edit()
++                                        .putString(KEY_FILTERS, input.getText().toString())
++                                        .apply())
++                .setNegativeButton(android.R.string.cancel, null)
++                .show();
++    }
++
++    private static void toast(ChromeActivity activity, String message) {
++        Toast.makeText(activity, message, Toast.LENGTH_SHORT).show();
++    }
++}
+diff --git aa/chrome/android/java/src/org/chromium/chrome/browser/pomelo/PomeloTools.java bb/chrome/android/java/src/org/chromium/chrome/browser/pomelo/PomeloTools.java
+index f0d733b..ec57d8d 100644
+--- aa/chrome/android/java/src/org/chromium/chrome/browser/pomelo/PomeloTools.java
++++ bb/chrome/android/java/src/org/chromium/chrome/browser/pomelo/PomeloTools.java
+@@ -93,6 +93,7 @@ public class PomeloTools {
+ 
+     public static boolean handleMenuAction(ChromeActivity activity, int id) {
+         if (PomeloDesk.handleMenuAction(activity, id)) return true;
++        if (PomeloMore.handleMenuAction(activity, id)) return true;
+         if (id == R.id.pomelo_float_video) {
+             floatVideo(activity);
+             return true;
+@@ -133,6 +134,7 @@ public class PomeloTools {
+         if (!"http".equals(scheme) && !"https".equals(scheme)) return;
+         WebContents webContents = tab.getWebContents();
+         if (webContents == null) return;
++        PomeloMore.applyCustomUserAgent(tab);
+         String code = enabledUserscriptSource();
+         if (code.isEmpty()) return;
+         runOnPage(webContents, code, null);
+diff --git aa/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java bb/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java
+index aa03e4d..30b1a79 100644
+--- aa/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java
++++ bb/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/MoreToolsItemBuilder.java
+@@ -305,6 +305,17 @@ public class MoreToolsItemBuilder {
+         items.add(pomeloItem(R.id.pomelo_notes, R.string.menu_pomelo_notes));
+         items.add(pomeloItem(R.id.pomelo_sessions, R.string.menu_pomelo_sessions));
+         items.add(pomeloItem(R.id.pomelo_sync_server, R.string.menu_pomelo_sync_server));
++        items.add(pomeloItem(R.id.pomelo_desktop_site, R.string.menu_pomelo_desktop_site));
++        items.add(pomeloItem(R.id.pomelo_reader, R.string.menu_pomelo_reader));
++        items.add(pomeloItem(R.id.pomelo_translate, R.string.menu_pomelo_translate));
++        items.add(pomeloItem(R.id.pomelo_save_pdf, R.string.menu_pomelo_save_pdf));
++        items.add(pomeloItem(R.id.pomelo_force_zoom, R.string.menu_pomelo_force_zoom));
++        items.add(pomeloItem(R.id.pomelo_user_agent, R.string.menu_pomelo_user_agent));
++        items.add(pomeloItem(R.id.pomelo_navigate_back, R.string.menu_pomelo_navigate_back));
++        items.add(pomeloItem(R.id.pomelo_navigate_forward, R.string.menu_pomelo_navigate_forward));
++        items.add(pomeloItem(R.id.pomelo_tab_group, R.string.menu_pomelo_tab_group));
++        items.add(pomeloItem(R.id.pomelo_incognito_lock, R.string.menu_pomelo_incognito_lock));
++        items.add(pomeloItem(R.id.pomelo_filters, R.string.menu_pomelo_filters));
+         items.add(pomeloItem(R.id.pomelo_customize_menu, R.string.menu_pomelo_customize_menu));
+         return items;
+     }
+diff --git aa/chrome/browser/android/content/content_utils.cc bb/chrome/browser/android/content/content_utils.cc
+index 1843ba6..6f2074f 100644
+--- aa/chrome/browser/android/content/content_utils.cc
++++ bb/chrome/browser/android/content/content_utils.cc
+@@ -68,6 +68,22 @@ static void JNI_ContentUtils_SetUserAgentOverride(
+       ->SetUserAgentOverride(spoofed_ua, j_override_in_new_tabs);
+ }
+ 
++static void JNI_ContentUtils_SetPomeloCustomUserAgent(
++    JNIEnv* env,
++    const base::android::JavaRef<jobject>& jweb_contents,
++    const std::string& user_agent) {
++  content::WebContents* web_contents =
++      content::WebContents::FromJavaWebContents(jweb_contents);
++  if (!web_contents) {
++    return;
++  }
++  blink::UserAgentOverride override_value;
++  if (!user_agent.empty()) {
++    override_value.ua_string_override = user_agent;
++  }
++  web_contents->SetUserAgentOverride(override_value, /*override_in_new_tabs=*/false);
++}
++
+ static void JNI_ContentUtils_SetPomeloAdBlockEnabled(JNIEnv* env, bool enabled) {
+   pomelo::SetAdBlockEnabled(enabled);
+ }
+diff --git aa/chrome/browser/android/content/java/src/org/chromium/chrome/browser/content/ContentUtils.java bb/chrome/browser/android/content/java/src/org/chromium/chrome/browser/content/ContentUtils.java
+index 0fd634d..89a764b 100644
+--- aa/chrome/browser/android/content/java/src/org/chromium/chrome/browser/content/ContentUtils.java
++++ bb/chrome/browser/android/content/java/src/org/chromium/chrome/browser/content/ContentUtils.java
+@@ -46,7 +46,7 @@ public class ContentUtils {
+         return ContentUtilsJni.get().getPomeloMediaUrls();
+     }
+ 
+-    /** Pomelo: custom sync server. Empty means the upstream default. */
++    /** Pomelo: custom sync server. Empty means the upstream default. "local" is on-device. */
+     @CalledByNative
+     @JniType("std::string")
+     public static String getPomeloSyncUrl() {
+@@ -54,6 +54,18 @@ public class ContentUtils {
+         return url == null ? "" : url;
+     }
+ 
++    /** Extra ABP/uBlock network filters pasted by the user. */
++    @CalledByNative
++    @JniType("std::string")
++    public static String getPomeloFilterRules() {
++        String rules = ContextUtils.getAppSharedPreferences().getString("pomelo_filter_rules", "");
++        return rules == null ? "" : rules;
++    }
++
++    public static void setPomeloCustomUserAgent(WebContents webContents, String userAgent) {
++        ContentUtilsJni.get().setPomeloCustomUserAgent(webContents, userAgent);
++    }
++
+     @NativeMethods
+     interface Natives {
+         @JniType("std::string")
+@@ -61,6 +73,9 @@ public class ContentUtils {
+ 
+         void setUserAgentOverride(WebContents webContents, boolean overrideInNewTabs);
+ 
++        void setPomeloCustomUserAgent(
++                WebContents webContents, @JniType("std::string") String userAgent);
++
+         void setPomeloAdBlockEnabled(boolean enabled);
+ 
+         boolean isPomeloAdBlockEnabled();
+diff --git aa/chrome/browser/android/pomelo/pomelo_request_throttle.cc bb/chrome/browser/android/pomelo/pomelo_request_throttle.cc
+index 286830f..96afc92 100644
+--- aa/chrome/browser/android/pomelo/pomelo_request_throttle.cc
++++ bb/chrome/browser/android/pomelo/pomelo_request_throttle.cc
+@@ -9,6 +9,7 @@
+ #include <string>
+ #include <string_view>
+ #include <utility>
++#include <vector>
+ 
+ #include "base/android/jni_android.h"
+ #include "base/command_line.h"
+@@ -24,37 +25,141 @@
+ namespace pomelo {
+ namespace {
+ 
+-constexpr std::string_view kAdHosts[] = {
+-    "doubleclick.net",
+-    "googlesyndication.com",
+-    "googleadservices.com",
+-    "googletagservices.com",
+-    "adnxs.com",
+-    "adsrvr.org",
+-    "rubiconproject.com",
+-    "pubmatic.com",
+-    "openx.net",
+-    "criteo.com",
+-    "criteo.net",
+-    "taboola.com",
+-    "outbrain.com",
+-    "scorecardresearch.com",
+-    "amazon-adsystem.com",
+-    "moatads.com",
+-    "adsafeprotected.com",
+-    "serving-sys.com",
+-    "2mdn.net",
+-    "adform.net",
+-    "smartadserver.com",
+-    "media.net",
+-    "casalemedia.com",
+-    "sharethrough.com",
+-    "yieldmo.com",
+-    "bidswitch.net",
+-    "contextweb.com",
+-    "ads.yahoo.com",
++// Original starter list in ABP/uBlock network-filter syntax. EasyList itself
++// is not bundled. Extra lines from the filter box are parsed the same way.
++constexpr char kBuiltinFilters[] =
++    "! Pomelo starter filters\n"
++    "||doubleclick.net^\n"
++    "||googlesyndication.com^\n"
++    "||googleadservices.com^\n"
++    "||googletagservices.com^\n"
++    "||adnxs.com^\n"
++    "||adsrvr.org^\n"
++    "||rubiconproject.com^\n"
++    "||pubmatic.com^\n"
++    "||openx.net^\n"
++    "||criteo.com^\n"
++    "||criteo.net^\n"
++    "||taboola.com^\n"
++    "||outbrain.com^\n"
++    "||scorecardresearch.com^\n"
++    "||amazon-adsystem.com^\n"
++    "||moatads.com^\n"
++    "||adsafeprotected.com^\n"
++    "||serving-sys.com^\n"
++    "||2mdn.net^\n"
++    "||adform.net^\n"
++    "||smartadserver.com^\n"
++    "||media.net^\n"
++    "||casalemedia.com^\n"
++    "||sharethrough.com^\n"
++    "||yieldmo.com^\n"
++    "||bidswitch.net^\n"
++    "||contextweb.com^\n"
++    "||ads.yahoo.com^\n"
++    "||pagead2.googlesyndication.com^\n";
++
++struct FilterRule {
++  bool allow = false;
++  std::string host_suffix;
+ };
+ 
++std::string TrimRule(std::string_view raw) {
++  size_t start = 0;
++  while (start < raw.size() &&
++         (raw[start] == ' ' || raw[start] == '\t' || raw[start] == '\r')) {
++    ++start;
++  }
++  size_t end = raw.size();
++  while (end > start &&
++         (raw[end - 1] == ' ' || raw[end - 1] == '\t' || raw[end - 1] == '\r')) {
++    --end;
++  }
++  return std::string(raw.substr(start, end - start));
++}
++
++void ParseFilters(std::string_view text, std::vector<FilterRule>* rules) {
++  size_t pos = 0;
++  while (pos <= text.size()) {
++    size_t next = text.find('\n', pos);
++    std::string_view raw =
++        text.substr(pos, next == std::string_view::npos ? text.size() - pos
++                                                        : next - pos);
++    pos = next == std::string_view::npos ? text.size() + 1 : next + 1;
++    std::string line = TrimRule(raw);
++    if (line.empty() || line[0] == '!' || line[0] == '[') {
++      continue;
++    }
++    FilterRule rule;
++    if (line.starts_with("@@")) {
++      rule.allow = true;
++      line.erase(0, 2);
++    }
++    size_t dollar = line.find('$');
++    if (dollar != std::string::npos) {
++      line.resize(dollar);
++    }
++    if (line.starts_with("||")) {
++      line.erase(0, 2);
++    }
++    size_t caret = line.find('^');
++    if (caret != std::string::npos) {
++      line.resize(caret);
++    }
++    size_t slash = line.find('/');
++    if (slash != std::string::npos) {
++      line.resize(slash);
++    }
++    if (line.empty() || line.find('*') != std::string::npos) {
++      continue;
++    }
++    rule.host_suffix = base::ToLowerASCII(line);
++    rules->push_back(std::move(rule));
++  }
++}
++
++struct FilterSet {
++  base::Lock lock;
++  std::string extra;
++  std::vector<FilterRule> rules;
++};
++
++FilterSet& filter_set() {
++  static base::NoDestructor<FilterSet> set;
++  return *set;
++}
++
++bool HostMatchesSuffix(std::string_view host, std::string_view suffix) {
++  if (host == suffix) {
++    return true;
++  }
++  return host.size() > suffix.size() &&
++         host[host.size() - suffix.size() - 1] == '.' &&
++         host.ends_with(suffix);
++}
++
++bool FiltersBlock(std::string_view host, std::string_view extra) {
++  FilterSet& set = filter_set();
++  base::AutoLock guard(set.lock);
++  if (set.rules.empty() || set.extra != extra) {
++    set.extra = std::string(extra);
++    set.rules.clear();
++    ParseFilters(kBuiltinFilters, &set.rules);
++    ParseFilters(extra, &set.rules);
++  }
++  bool block = false;
++  for (const FilterRule& rule : set.rules) {
++    if (!HostMatchesSuffix(host, rule.host_suffix)) {
++      continue;
++    }
++    if (rule.allow) {
++      return false;
++    }
++    block = true;
++  }
++  return block;
++}
++
+ constexpr size_t kMaxMediaUrls = 40;
+ 
+ struct MediaLog {
+@@ -72,20 +177,6 @@
+ std::atomic<bool>& adblock_enabled() {
+   static std::atomic<bool> enabled{true};
+   return enabled;
+ }
+ 
+-bool HostIsListed(std::string_view host) {
+-  for (std::string_view suffix : kAdHosts) {
+-    if (host == suffix) {
+-      return true;
+-    }
+-    if (host.size() > suffix.size() &&
+-        host[host.size() - suffix.size() - 1] == '.' &&
+-        host.ends_with(suffix)) {
+-      return true;
+-    }
+-  }
+-  return false;
+-}
+-
+ bool LooksLikeMedia(const GURL& url,
+@@ -168,7 +259,9 @@ class PomeloRequestThrottle : public blink::URLLoaderThrottle {
+     if (!url.SchemeIsHTTPOrHTTPS()) {
+       return;
+     }
+-    if (HostIsListed(url.host()) && delegate_) {
++    std::string extra = Java_ContentUtils_getPomeloFilterRules(
++        base::android::AttachCurrentThread());
++    if (FiltersBlock(url.host(), extra) && delegate_) {
+       delegate_->CancelWithError(net::ERR_BLOCKED_BY_CLIENT, "pomelo-adblock");
+     }
+   }
+@@ -210,6 +303,14 @@ void ApplySyncUrlSwitch() {
+     return;
+   }
+   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
++  // "local" is Chromium's loopback sync backend: no Google account and no
++  // remote server. Any other value is a custom --sync-url.
++  if (url == "local") {
++    if (!command_line->HasSwitch("enable-local-sync-backend")) {
++      command_line->AppendSwitch("enable-local-sync-backend");
++    }
++    return;
++  }
+   if (!command_line->HasSwitch("sync-url")) {
+     command_line->AppendSwitchASCII("sync-url", url);
+   }
+diff --git aa/chrome/browser/devtools/android/devtools_window_android.cc bb/chrome/browser/devtools/android/devtools_window_android.cc
+index 2a92761..601336a 100644
+--- aa/chrome/browser/devtools/android/devtools_window_android.cc
++++ bb/chrome/browser/devtools/android/devtools_window_android.cc
+@@ -17,6 +17,9 @@
+ 
+ #if BUILDFLAG(ENABLE_DEVTOOLS_FRONTEND)
+ #include "chrome/browser/devtools/devtools_window.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/common/pref_names.h"
++#include "components/prefs/scoped_user_pref_update.h"
+ #endif  // BUILDFLAG(ENABLE_DEVTOOLS_FRONTEND)
+ 
+ #if BUILDFLAG(ENABLE_DEVTOOLS_FRONTEND)
+@@ -70,6 +73,12 @@ static void JNI_DevToolsWindowAndroid_OpenDevTools(
+ #if BUILDFLAG(ENABLE_DEVTOOLS_FRONTEND)
+   content::WebContents* web_contents =
+       content::WebContents::FromJavaWebContents(java_web_contents);
++  // Pomelo: bottom dock in the browser window, not a separate undocked window.
++  if (Profile* profile = Profile::FromBrowserContext(
++          web_contents->GetBrowserContext())) {
++    ScopedDictPrefUpdate update(profile->GetPrefs(), prefs::kDevToolsPreferences);
++    update->Set("currentDockState", "\"bottom\"");
++  }
+   DevToolsWindow::OpenDevToolsWindow(
+       web_contents, DevToolsToggleAction::Show(),
+       DevToolsOpenedByAction::kMainMenuOrMainShortcut);
+diff --git aa/chrome/browser/devtools/devtools_window.cc bb/chrome/browser/devtools/devtools_window.cc
+index cf99479..9e36470 100644
+--- aa/chrome/browser/devtools/devtools_window.cc
++++ bb/chrome/browser/devtools/devtools_window.cc
+@@ -1403,8 +1403,9 @@ DevToolsWindow* DevToolsWindow::Create(
+ 
+   SessionID inspected_browser_session_id = SessionID::InvalidValue();
+ #if BUILDFLAG(IS_ANDROID)
+-  // Docking is not supported yet.
+-  can_dock = false;
++  // Pomelo: ask the frontend to dock instead of forcing an undocked window.
++  // The bottom dock side is stored before the window is created.
++  can_dock = true;
+ #else
+   if (inspected_web_contents) {
+     // Check for a place to dock.
+@@ -1817,7 +1818,11 @@ void DevToolsWindow::SetIsDocked(bool dock_requested) {
+   }
+ 
+ #if BUILDFLAG(IS_ANDROID)
+-  LOG_IF(WARNING, dock_requested) << "Docking is not supported yet.";
++  // Pomelo: keep a requested dock and resize the inspected page. Upstream
++  // logged and left the frontend undocked.
++  if (dock_requested) {
++    UpdateBrowserWindow();
++  }
+ #else
+   if (dock_requested && !was_docked && browser_) {
+     // Detach window from the external devtools browser. It will lead to
+diff --git aa/chrome/browser/ui/android/strings/android_chrome_strings.grd bb/chrome/browser/ui/android/strings/android_chrome_strings.grd
+index 7f1a5ae..e5bf128 100644
+--- aa/chrome/browser/ui/android/strings/android_chrome_strings.grd
++++ bb/chrome/browser/ui/android/strings/android_chrome_strings.grd
+@@ -4536,6 +4536,39 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
+       <message name="IDS_MENU_POMELO_SYNC_SERVER" desc="Menu item that sets a non-Google sync server. [CHAR_LIMIT=27]">
+         Sync server
+       </message>
++      <message name="IDS_MENU_POMELO_DESKTOP_SITE" desc="Menu item that toggles the desktop site for this host. [CHAR_LIMIT=27]">
++        Desktop site
++      </message>
++      <message name="IDS_MENU_POMELO_READER" desc="Menu item that opens reader mode with a larger font. [CHAR_LIMIT=27]">
++        Reader text
++      </message>
++      <message name="IDS_MENU_POMELO_TRANSLATE" desc="Menu item that translates the current page. [CHAR_LIMIT=27]">
++        Translate
++      </message>
++      <message name="IDS_MENU_POMELO_SAVE_PDF" desc="Menu item that prints the page, including save as PDF. [CHAR_LIMIT=27]">
++        Save as PDF
++      </message>
++      <message name="IDS_MENU_POMELO_FORCE_ZOOM" desc="Menu item that toggles force-enable zoom. [CHAR_LIMIT=27]">
++        Force zoom
++      </message>
++      <message name="IDS_MENU_POMELO_USER_AGENT" desc="Menu item that sets a custom user agent. [CHAR_LIMIT=27]">
++        User agent
++      </message>
++      <message name="IDS_MENU_POMELO_NAVIGATE_BACK" desc="Menu item that goes back. [CHAR_LIMIT=27]">
++        Back
++      </message>
++      <message name="IDS_MENU_POMELO_NAVIGATE_FORWARD" desc="Menu item that goes forward. [CHAR_LIMIT=27]">
++        Forward
++      </message>
++      <message name="IDS_MENU_POMELO_TAB_GROUP" desc="Menu item that groups this tab with a neighbor. [CHAR_LIMIT=27]">
++        Group tabs
++      </message>
++      <message name="IDS_MENU_POMELO_INCOGNITO_LOCK" desc="Menu item that sets an Incognito PIN. [CHAR_LIMIT=27]">
++        Incognito lock
++      </message>
++      <message name="IDS_MENU_POMELO_FILTERS" desc="Menu item that edits extra ad-filter rules. [CHAR_LIMIT=27]">
++        Filter lists
++      </message>
+       <message name="IDS_MENU_SETTINGS" desc="Menu item for opening browser settings. [CHAR_LIMIT=27]">
+         Settings
+       </message>

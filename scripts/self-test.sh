@@ -24,7 +24,7 @@ grep -q 'chrome_public_manifest_package = "io.github.hooiv.pomelo"' "$REPO_ROOT/
 grep -q 'google_api_key = ""' "$REPO_ROOT/args.gn"
 
 series_body=$(grep -vE '^[[:space:]]*(#|$)' "$REPO_ROOT/patches/series")
-expected=$'patches/0001-rebrand-pomelo.patch\npatches/0002-desktop-android-extensions.patch\npatches/0003-on-device-devtools.patch\npatches/0004-bottom-address-bar.patch\npatches/0005-night-mode.patch\npatches/0006-v2-phone-tools.patch\npatches/0007-v3-phone-tools.patch'
+expected=$'patches/0001-rebrand-pomelo.patch\npatches/0002-desktop-android-extensions.patch\npatches/0003-on-device-devtools.patch\npatches/0004-bottom-address-bar.patch\npatches/0005-night-mode.patch\npatches/0006-v2-phone-tools.patch\npatches/0007-v3-phone-tools.patch\npatches/0008-v4-phone-tools.patch'
 [[ $series_body == "$expected" ]]
 for patch in $series_body; do
   [[ -f $REPO_ROOT/$patch ]] || die "missing $patch"
@@ -91,9 +91,9 @@ if CHROMIUM_ROOT=$tmp/cr CHECKPOINT_DIR=$tmp/ckpt "$script_dir/checkpoint.sh" re
 fi
 
 # Version resolver.
-[[ $(read_pomelo_revision) == 3 ]]
+[[ $(read_pomelo_revision) == 4 ]]
 main_tag=$(GITHUB_REF=refs/heads/main GITHUB_SHA=abcdef1234567890 release_tag 158.0.8127.43)
-[[ $main_tag == v158.0.8127.43-v3 ]]
+[[ $main_tag == v158.0.8127.43-v4 ]]
 branch_tag=$(GITHUB_REF=refs/heads/cursor/v1-phone-features-beb5 GITHUB_SHA=130f13fa326cdf84 release_tag 158.0.8127.43)
 [[ $branch_tag == v158.0.8127.43-cursor-v1-phone-features-beb5-130f13f ]]
 if GITHUB_REF=refs/heads/main release_is_prerelease; then
